@@ -58,7 +58,11 @@ export async function seedDatabase(): Promise<SeedResult> {
           allowAgentApproveScopes: false,
           defaultQuoteValidDays: 30,
           defaultPaymentTermsDays: 30,
-          currency: 'USD'
+          currency: 'USD',
+          quoteEmailFromAddress: 'quotes@studio37customdesigns.com',
+          quoteEmailFromName: 'Studio 37',
+          quoteEmailReplyTo: 'drew@studio37.local',
+          quoteEmailCopyOnApprove: true
         }
       })
       .returning()

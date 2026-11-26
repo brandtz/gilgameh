@@ -9,6 +9,7 @@ import { getCustomerById } from './customer.service'
 import { generateBrandedDocumentPdf } from './pdf.service'
 import { storeAttachment } from './attachment.service'
 import { emitWebhookEvent } from './webhook.service'
+import { sendQuoteEmailCopy, type EmailCopyStatus } from './document-email.service'
 
 export interface QuoteLineInput {
   catalogItemId?: string | null
@@ -441,7 +442,7 @@ export async function approveAndSendQuote(
     data: pdfBytes
   })
 
-  return db.transaction(async (tx) => {
+  const committed = await db.transaction(async (tx) => {
     const [current] = await tx
       .select()
       .from(schema.quotes)
@@ -478,6 +479,27 @@ export async function approveAndSendQuote(
       pdfUrl: `/api/v1/quotes/${updated.id}/pdf`
     }
   })
+
+  // Send PDF copy strictly to the signed-in user AFTER the approval transaction commits.
+  // A failed or skipped email NEVER affects or rolls back the quote approval.
+  let emailCopy: EmailCopyStatus
+  if (tenant.settings?.quoteEmailCopyOnApprove === false) {
+    emailCopy = { status: 'skipped', reason: 'Email copy on approve is disabled for this business.' }
+  } else {
+    try {
+      emailCopy = await sendQuoteEmailCopy(ctx, committed.id, 'approve')
+    } catch (err) {
+      emailCopy = {
+        status: 'failed',
+        reason: err instanceof Error ? err.message : 'Email copy delivery failed.'
+      }
+    }
+  }
+
+  return {
+    ...committed,
+    emailCopy
+  }
 }
 
 export async function createQuoteRevision(ctx: ActorContext, quoteId: string) {

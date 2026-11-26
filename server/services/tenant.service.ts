@@ -3,6 +3,7 @@ import { getDb, schema, type Database } from '../db'
 import { Errors } from '../utils/errors'
 import type { ActorContext } from '../utils/auth-context'
 import { recordAudit } from './audit.service'
+import { checkSenderDomainVerifiedInResend } from './email.service'
 
 export async function getCurrentTenant(tenantId: string) {
   const db = await getDb()
@@ -109,12 +110,21 @@ export async function updateTenant(
     email: string | null
     phone: string | null
     address: schema.AddressJson
-    branding: schema.TenantBranding
+    branding: Record<string, unknown>
     numberingSettings: schema.TenantNumberingSettings
-    taxSettings: schema.TenantTaxSettings
+    taxSettings: Record<string, unknown>
     settings: schema.TenantSettings
   }>
 ) {
+  if (patch.settings?.quoteEmailFromAddress) {
+    const check = await checkSenderDomainVerifiedInResend(patch.settings.quoteEmailFromAddress)
+    if (check.checked && !check.verified) {
+      throw Errors.validation(
+        check.reason || `Sender domain "${check.domain}" is not verified in Resend.`
+      )
+    }
+  }
+
   const db = await getDb()
   return db.transaction(async (tx) => {
     const [existing] = await tx
@@ -123,20 +133,54 @@ export async function updateTenant(
       .where(and(eq(schema.tenants.id, ctx.tenantId), isNull(schema.tenants.deletedAt)))
     if (!existing) throw Errors.notFound('Tenant', ctx.tenantId)
 
+    const mergedBranding: schema.TenantBranding | undefined = patch.branding
+      ? {
+          ...existing.branding,
+          primaryColor: String(patch.branding.primaryColor || existing.branding.primaryColor || '#1e293b'),
+          accentColor: String(patch.branding.accentColor || existing.branding.accentColor || '#b45309'),
+          logoUrl: (patch.branding.logoUrl as string) || undefined,
+          logoDataUrl: (patch.branding.logoDataUrl as string) || undefined,
+          headerText: (patch.branding.headerText as string) || undefined,
+          footerText: (patch.branding.footerText as string) || undefined,
+          paymentInstructions: (patch.branding.paymentInstructions as string) || undefined,
+          quoteTerms: (patch.branding.quoteTerms as string) || undefined,
+          invoiceTerms: (patch.branding.invoiceTerms as string) || undefined
+        }
+      : undefined
+
+    const mergedTaxSettings: schema.TenantTaxSettings | undefined = patch.taxSettings
+      ? {
+          defaultTaxRateBps: Number(patch.taxSettings.defaultTaxRateBps ?? existing.taxSettings.defaultTaxRateBps),
+          taxLabel: String(patch.taxSettings.taxLabel || existing.taxSettings.taxLabel || 'Tax'),
+          taxId: (patch.taxSettings.taxId as string) || undefined
+        }
+      : undefined
+
+    const mergedSettings: schema.TenantSettings | undefined = patch.settings
+      ? {
+          ...existing.settings,
+          ...patch.settings,
+          quoteEmailFromAddress: patch.settings.quoteEmailFromAddress || null,
+          quoteEmailFromName: patch.settings.quoteEmailFromName || null,
+          quoteEmailReplyTo: patch.settings.quoteEmailReplyTo || null,
+          quoteEmailCopyOnApprove: patch.settings.quoteEmailCopyOnApprove ?? existing.settings.quoteEmailCopyOnApprove ?? true
+        }
+      : undefined
+
     const [updated] = await tx
       .update(schema.tenants)
       .set({
         ...(patch.name !== undefined ? { name: patch.name } : {}),
         ...(patch.legalName !== undefined ? { legalName: patch.legalName } : {}),
         ...(patch.contactName !== undefined ? { contactName: patch.contactName } : {}),
-        ...(patch.website !== undefined ? { website: patch.website } : {}),
-        ...(patch.email !== undefined ? { email: patch.email } : {}),
+        ...(patch.website !== undefined ? { website: patch.website || null } : {}),
+        ...(patch.email !== undefined ? { email: patch.email || null } : {}),
         ...(patch.phone !== undefined ? { phone: patch.phone } : {}),
         ...(patch.address !== undefined ? { address: patch.address } : {}),
-        ...(patch.branding !== undefined ? { branding: patch.branding } : {}),
+        ...(mergedBranding !== undefined ? { branding: mergedBranding } : {}),
         ...(patch.numberingSettings !== undefined ? { numberingSettings: patch.numberingSettings } : {}),
-        ...(patch.taxSettings !== undefined ? { taxSettings: patch.taxSettings } : {}),
-        ...(patch.settings !== undefined ? { settings: patch.settings } : {}),
+        ...(mergedTaxSettings !== undefined ? { taxSettings: mergedTaxSettings } : {}),
+        ...(mergedSettings !== undefined ? { settings: mergedSettings } : {}),
         updatedAt: new Date()
       })
       .where(eq(schema.tenants.id, ctx.tenantId))

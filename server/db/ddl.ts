@@ -524,6 +524,25 @@ CREATE TABLE IF NOT EXISTS chatwoot_conversations (
   UNIQUE (tenant_id, external_conversation_id)
 );
 
+CREATE TABLE IF NOT EXISTS quote_email_sends (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id),
+  quote_id uuid NOT NULL REFERENCES quotes(id),
+  quote_version integer NOT NULL,
+  user_id uuid NOT NULL REFERENCES users(id),
+  trigger text NOT NULL,
+  recipient text NOT NULL,
+  sender text NOT NULL,
+  reply_to text,
+  resend_message_id text,
+  status text NOT NULL,
+  error_code text,
+  error_message text,
+  idempotency_key text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, idempotency_key)
+);
+
 -- Idempotent column upgrades for existing deployments
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS contact_name text;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS website text;
@@ -548,4 +567,6 @@ CREATE INDEX IF NOT EXISTS audit_logs_tenant_created_idx ON audit_logs(tenant_id
 CREATE INDEX IF NOT EXISTS webhook_deliveries_tenant_idx ON webhook_deliveries(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS chatwoot_contacts_tenant_idx ON chatwoot_contacts(tenant_id);
 CREATE INDEX IF NOT EXISTS chatwoot_convos_tenant_status_idx ON chatwoot_conversations(tenant_id, status);
+CREATE INDEX IF NOT EXISTS quote_email_sends_tenant_quote_idx ON quote_email_sends(tenant_id, quote_id);
+CREATE INDEX IF NOT EXISTS quote_email_sends_rate_idx ON quote_email_sends(tenant_id, quote_id, user_id, trigger, created_at);
 `

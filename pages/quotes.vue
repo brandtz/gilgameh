@@ -168,6 +168,9 @@
               <button v-if="q.status === 'draft'" class="text-xs bg-emerald-600 text-white px-2.5 py-1 rounded" @click="approve(q)">
                 Approve &amp; Send
               </button>
+              <button v-if="q.status !== 'draft'" class="text-xs border border-slate-300 px-2 py-1 rounded" @click="emailCopy(q)">
+                Email Copy
+              </button>
               <button v-if="q.status === 'sent'" class="text-xs bg-amber-600 text-white px-2.5 py-1 rounded" @click="acceptAndOrder(q)">
                 Accept → Order
               </button>
@@ -325,12 +328,36 @@ async function applyCatalogUpdates() {
 }
 
 async function approve(q: any) {
-  await apiFetch(`/api/v1/quotes/${q.id}/approve`, {
-    method: 'POST',
-    body: { version: q.version, sendEmail: true }
-  })
-  showToast(`Quote ${q.quoteNumber} approved and PDF generated`)
+  const res = await apiFetch<{ data: { emailCopy?: { status: string; sentTo?: string; reason?: string } } }>(
+    `/api/v1/quotes/${q.id}/approve`,
+    {
+      method: 'POST',
+      body: { version: q.version }
+    }
+  )
+  const ec = res.data?.emailCopy
+  if (ec?.status === 'sent') {
+    showToast(`Quote ${q.quoteNumber} approved & PDF emailed to ${ec.sentTo}`)
+  } else if (ec?.status === 'skipped') {
+    showToast(`Quote ${q.quoteNumber} approved (email skipped: ${ec.reason || 'not configured'})`)
+  } else if (ec?.status === 'failed') {
+    showToast(`Quote ${q.quoteNumber} approved (email failed: ${ec.reason || 'check Resend'})`, 'err')
+  } else {
+    showToast(`Quote ${q.quoteNumber} approved and PDF generated`)
+  }
   await load()
+}
+
+async function emailCopy(q: any) {
+  const res = await apiFetch<{ data: { status: string; sentTo?: string; from?: string; reason?: string } }>(
+    `/api/v1/quotes/${q.id}/email-copy`,
+    { method: 'POST', body: {} }
+  )
+  if (res.data.status === 'sent') {
+    showToast(`Emailed ${q.quoteNumber} copy to ${res.data.sentTo}`)
+  } else {
+    showToast(`Email copy ${res.data.status}: ${res.data.reason || ''}`, res.data.status === 'failed' ? 'err' : 'ok')
+  }
 }
 
 async function revise(q: any) {

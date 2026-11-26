@@ -2,8 +2,10 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import type { ActorContext } from '../utils/auth-context'
 import { hasAllScopes, type Scope } from '../utils/scopes'
+import { buildInsufficientScopeMessage } from '../utils/mcp-scopes'
 import { formatCents } from '../utils/money'
 import { Errors } from '../utils/errors'
+import { sendQuoteEmailCopy, type EmailCopyStatus } from './document-email.service'
 import {
   createCustomer,
   findCustomerCandidates,
@@ -24,10 +26,31 @@ import { approveExpense, createDraftExpense } from './expense.service'
 import { approveStockMovement, createDraftStockAdjustment } from './inventory.service'
 import { getBusinessSummary } from './integration.service'
 
+// Strict schema with additionalProperties: false — rejects any `to`, `cc`, `bcc` or unknown field.
+export const emailQuoteCopyInputSchema = z
+  .object({
+    quoteId: z.string().uuid()
+  })
+  .strict()
+
 function assertScope(ctx: ActorContext, required: Scope[]) {
   if (!hasAllScopes(ctx.scopes, required)) {
-    throw Errors.forbidden(`Agent token missing required scope(s): ${required.join(', ')}`)
+    const granted = new Set(ctx.scopes)
+    const missing = required.filter((s) => !granted.has(s))
+    throw Errors.forbidden(buildInsufficientScopeMessage(missing), {
+      requiredScopes: missing
+    })
   }
+}
+
+function formatEmailCopySentence(quoteNumber: string, emailCopy: EmailCopyStatus): string {
+  if (emailCopy.status === 'sent') {
+    return `Emailed ${quoteNumber} (PDF attached) to ${emailCopy.sentTo} from ${emailCopy.from}.`
+  }
+  if (emailCopy.status === 'skipped') {
+    return `Email copy skipped: ${emailCopy.reason || 'not configured'}`
+  }
+  return `Email copy failed: ${emailCopy.reason || 'delivery error'}`
 }
 
 function okResult(summary: string, data: unknown) {
@@ -294,7 +317,7 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
 
   server.tool(
     'approve_quote',
-    'Approve and finalize a draft quote (generates branded PDF). Requires exact draft version. Blocked if tenant has not opted into agent approvals.',
+    'Approve and finalize a draft quote (generates branded PDF). Requires exact draft version. Blocked if tenant has not opted into agent approvals. On success, emails a PDF copy to the signed-in user only.',
     {
       quoteId: z.string().uuid(),
       version: z.number().int().min(1)
@@ -303,10 +326,34 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
       try {
         assertScope(ctx, ['quotes:approve'])
         const approved = await approveAndSendQuote(ctx, quoteId, version)
+        const emailSentence = formatEmailCopySentence(approved.quoteNumber, approved.emailCopy)
         return okResult(
-          `Approved quote ${approved.quoteNumber} (status: ${approved.status}, v${approved.version}). PDF ready at ${baseUrl}${approved.pdfUrl}`,
+          `Approved quote ${approved.quoteNumber} (status: ${approved.status}, v${approved.version}). ${emailSentence} PDF ready at ${baseUrl}${approved.pdfUrl}`,
           { ...approved, pdfFullUrl: `${baseUrl}${approved.pdfUrl}` }
         )
+      } catch (err) {
+        return errResult(err)
+      }
+    }
+  )
+
+  // NOTE: `email_quote_copy` only requires `quotes:read` because the recipient is strictly locked
+  // server-side to the authenticated user's own email. Any future `send_quote_to_customer` tool
+  // MUST introduce a new `quotes:send` scope, explicit confirmation design, and customer interaction logging.
+  server.tool(
+    'email_quote_copy',
+    'Email a copy of a finalized quote (PDF attached) to the signed-in user only. Cannot send to customers or any other address.',
+    {
+      quoteId: z.string().uuid()
+    },
+    async (rawArgs) => {
+      try {
+        assertScope(ctx, ['quotes:read'])
+        const { quoteId } = emailQuoteCopyInputSchema.parse(rawArgs)
+        const quote = await getQuoteById(ctx, quoteId)
+        const emailCopy = await sendQuoteEmailCopy(ctx, quoteId, 'manual')
+        const sentence = formatEmailCopySentence(quote.quoteNumber, emailCopy)
+        return okResult(sentence, { quoteId: quote.id, quoteNumber: quote.quoteNumber, emailCopy })
       } catch (err) {
         return errResult(err)
       }

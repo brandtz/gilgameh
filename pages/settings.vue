@@ -66,29 +66,48 @@
     <div v-if="tenant" class="bg-white rounded-xl border border-slate-200 p-6 space-y-5">
       <div class="font-semibold text-base text-slate-900">PDF Quote &amp; Invoice Template</div>
 
-      <!-- Logo Upload -->
-      <div class="flex flex-wrap items-center gap-4 p-4 rounded-lg bg-slate-50 border border-slate-200">
-        <div class="h-16 w-28 rounded border bg-white flex items-center justify-center overflow-hidden p-1">
-          <img
-            v-if="tenant.branding.logoDataUrl"
-            :src="tenant.branding.logoDataUrl"
-            alt="Business Logo Preview"
-            class="max-h-full max-w-full object-contain"
-          />
-          <span v-else class="text-xs text-slate-400">No Logo</span>
-        </div>
-        <div class="space-y-1.5 text-sm">
-          <div class="font-medium text-slate-800">Upload Business Logo (PNG or JPEG, max 1MB)</div>
-          <div class="flex items-center gap-2">
-            <input type="file" accept="image/png,image/jpeg" class="text-xs" @change="onLogoSelected" />
-            <button
+      <!-- Logo Upload & Live PDF Header Preview -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="flex flex-wrap items-center gap-4 p-4 rounded-lg bg-slate-50 border border-slate-200">
+          <div class="h-16 w-28 rounded border bg-white flex items-center justify-center overflow-hidden p-1">
+            <img
               v-if="tenant.branding.logoDataUrl"
-              type="button"
-              class="text-xs text-red-600 underline"
-              @click="tenant.branding.logoDataUrl = ''"
-            >
-              Remove Logo
-            </button>
+              :src="tenant.branding.logoDataUrl"
+              alt="Business Logo Preview"
+              class="max-h-full max-w-full object-contain"
+            />
+            <span v-else class="text-xs text-slate-400">No Logo</span>
+          </div>
+          <div class="space-y-1.5 text-sm">
+            <div class="font-medium text-slate-800">Upload Business Logo (PNG, JPEG, WebP, or SVG)</div>
+            <div class="text-xs text-slate-500">Automatically pipes into all existing and new Quote &amp; Invoice PDFs.</div>
+            <div class="flex items-center gap-2">
+              <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" class="text-xs" @change="onLogoSelected" />
+              <button
+                v-if="tenant.branding.logoDataUrl"
+                type="button"
+                class="text-xs text-red-600 underline"
+                @click="tenant.branding.logoDataUrl = ''"
+              >
+                Remove Logo
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live PDF Header Preview -->
+        <div
+          class="rounded-lg overflow-hidden border border-slate-200 flex items-center gap-3 px-4 py-3 text-white"
+          :style="{ backgroundColor: tenant.branding.primaryColor, borderBottom: `4px solid ${tenant.branding.accentColor}` }"
+        >
+          <div v-if="tenant.branding.logoDataUrl" class="bg-white rounded p-1.5 h-14 w-20 flex items-center justify-center shrink-0">
+            <img :src="tenant.branding.logoDataUrl" alt="PDF Logo Preview" class="max-h-full max-w-full object-contain" />
+          </div>
+          <div class="min-w-0 flex-1">
+            <div class="text-[10px] uppercase tracking-wider opacity-75">Live Quote / Invoice PDF Header</div>
+            <div class="font-bold text-base truncate">{{ tenant.name }}</div>
+            <div v-if="tenant.branding.headerText" class="text-xs text-amber-200 truncate">{{ tenant.branding.headerText }}</div>
+            <div class="text-[11px] opacity-80 truncate">{{ [tenant.legalName, tenant.phone].filter(Boolean).join(' · ') }}</div>
           </div>
         </div>
       </div>
@@ -135,6 +154,43 @@
           <label class="block text-xs text-slate-500 mb-1">Custom PDF Footer Text</label>
           <input v-model="tenant.branding.footerText" placeholder="Thank you for your business!" class="w-full border rounded-lg px-3 py-2" />
         </div>
+      </div>
+
+      <!-- Quote Email Copy Settings -->
+      <div class="pt-4 border-t space-y-3">
+        <div class="font-semibold text-sm text-slate-900">Quote Email Copy Settings (Sent to Signed-In User Only)</div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+          <div>
+            <label class="block text-xs text-slate-500 mb-1">Sender Email (Verified Resend Domain)</label>
+            <input
+              v-model="tenant.settings.quoteEmailFromAddress"
+              type="email"
+              placeholder="quotes@studio37customdesigns.com"
+              class="w-full border rounded-lg px-3 py-2"
+            />
+          </div>
+          <div>
+            <label class="block text-xs text-slate-500 mb-1">Sender Display Name</label>
+            <input
+              v-model="tenant.settings.quoteEmailFromName"
+              placeholder="Studio 37"
+              class="w-full border rounded-lg px-3 py-2"
+            />
+          </div>
+          <div>
+            <label class="block text-xs text-slate-500 mb-1">Reply-To Address (optional)</label>
+            <input
+              v-model="tenant.settings.quoteEmailReplyTo"
+              type="email"
+              placeholder="Defaults to tenant owner email"
+              class="w-full border rounded-lg px-3 py-2"
+            />
+          </div>
+        </div>
+        <label class="flex items-center gap-2 text-xs font-medium text-slate-700">
+          <input v-model="tenant.settings.quoteEmailCopyOnApprove" type="checkbox" />
+          <span>Automatically email PDF copy to the approving user when a quote is approved</span>
+        </label>
       </div>
 
       <!-- Tax & Security Controls -->
@@ -233,6 +289,17 @@ async function load() {
     invoiceTerms: '',
     ...(t.branding || {})
   }
+  t.settings = {
+    allowAgentApproveScopes: false,
+    defaultQuoteValidDays: 30,
+    defaultPaymentTermsDays: 30,
+    currency: 'USD',
+    quoteEmailFromAddress: '',
+    quoteEmailFromName: t.name || '',
+    quoteEmailReplyTo: '',
+    quoteEmailCopyOnApprove: true,
+    ...(t.settings || {})
+  }
   tenant.value = t
   apiKeys.value = kRes.data
   oauthTokens.value = oRes.data
@@ -242,21 +309,39 @@ function onLogoSelected(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
-  if (!['image/png', 'image/jpeg'].includes(file.type)) {
-    showToast('Logo must be a PNG or JPEG image', 'err')
+  if (file.size > 5_000_000) {
+    showToast('Logo image must be under 5MB', 'err')
     return
   }
-  if (file.size > 1_000_000) {
-    showToast('Logo file must be under 1MB', 'err')
-    return
-  }
-  const reader = new FileReader()
-  reader.onload = () => {
-    if (typeof reader.result === 'string' && tenant.value) {
-      tenant.value.branding.logoDataUrl = reader.result
+  // Normalize any uploaded image (PNG, JPEG, WebP, SVG) via Canvas into a crisp PNG data URL for PDF embedding
+  const objectUrl = URL.createObjectURL(file)
+  const img = new Image()
+  img.onload = () => {
+    try {
+      const maxDim = 600
+      const scale = Math.min(maxDim / img.naturalWidth, maxDim / img.naturalHeight, 1)
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale))
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale))
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('Canvas unavailable')
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      const pngDataUrl = canvas.toDataURL('image/png')
+      if (tenant.value) {
+        tenant.value.branding.logoDataUrl = pngDataUrl
+        showToast('Logo loaded — click "Save Business & PDF Settings" to apply to all quotes & invoices')
+      }
+    } catch {
+      showToast('Could not process logo image. Please try a PNG or JPEG file.', 'err')
+    } finally {
+      URL.revokeObjectURL(objectUrl)
     }
   }
-  reader.readAsDataURL(file)
+  img.onerror = () => {
+    URL.revokeObjectURL(objectUrl)
+    showToast('Unsupported image file. Please upload a PNG, JPEG, WebP, or SVG.', 'err')
+  }
+  img.src = objectUrl
 }
 
 async function saveTenant() {

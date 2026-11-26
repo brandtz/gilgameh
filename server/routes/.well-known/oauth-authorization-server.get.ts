@@ -1,5 +1,5 @@
 import { defineEventHandler } from 'h3'
-import { ALL_SCOPES } from '../../utils/scopes'
+import { MCP_SCOPES_SUPPORTED } from '../../utils/mcp-scopes'
 
 export default defineEventHandler(() => {
   const baseUrl = process.env.APP_BASE_URL || 'http://localhost:3000'
@@ -13,6 +13,6 @@ export default defineEventHandler(() => {
     grant_types_supported: ['authorization_code', 'refresh_token'],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none'],
-    scopes_supported: ALL_SCOPES
+    scopes_supported: [...MCP_SCOPES_SUPPORTED]
   }
 })

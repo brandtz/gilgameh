@@ -74,7 +74,7 @@ export const updateTenantSchema = z.object({
   address: addressSchema.optional(),
   branding: z
     .object({
-      logoUrl: z.string().url().optional().or(z.literal('')),
+      logoUrl: z.string().url().optional().nullable().or(z.literal('')),
       logoDataUrl: z
         .string()
         .max(2_000_000)
@@ -83,14 +83,15 @@ export const updateTenantSchema = z.object({
           'Logo must be a PNG or JPEG image'
         )
         .optional()
+        .nullable()
         .or(z.literal('')),
       primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
       accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
-      headerText: z.string().max(200).optional(),
-      footerText: z.string().max(500).optional(),
-      paymentInstructions: z.string().max(1000).optional(),
-      quoteTerms: z.string().max(1000).optional(),
-      invoiceTerms: z.string().max(1000).optional()
+      headerText: z.string().max(200).optional().nullable(),
+      footerText: z.string().max(500).optional().nullable(),
+      paymentInstructions: z.string().max(1000).optional().nullable(),
+      quoteTerms: z.string().max(1000).optional().nullable(),
+      invoiceTerms: z.string().max(1000).optional().nullable()
     })
     .optional(),
   numberingSettings: z
@@ -107,7 +108,7 @@ export const updateTenantSchema = z.object({
     .object({
       defaultTaxRateBps: z.number().int().min(0).max(5000),
       taxLabel: z.string().min(1).max(40),
-      taxId: z.string().max(60).optional()
+      taxId: z.string().max(60).optional().nullable()
     })
     .optional(),
   settings: z
@@ -115,7 +116,11 @@ export const updateTenantSchema = z.object({
       allowAgentApproveScopes: z.boolean(),
       defaultQuoteValidDays: z.number().int().min(1).max(365),
       defaultPaymentTermsDays: z.number().int().min(0).max(365),
-      currency: z.string().length(3)
+      currency: z.string().length(3),
+      quoteEmailFromAddress: z.string().email().optional().nullable().or(z.literal('')),
+      quoteEmailFromName: z.string().max(120).optional().nullable().or(z.literal('')),
+      quoteEmailReplyTo: z.string().email().optional().nullable().or(z.literal('')),
+      quoteEmailCopyOnApprove: z.boolean().optional()
     })
     .optional()
 })

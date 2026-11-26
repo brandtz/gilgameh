@@ -54,6 +54,10 @@ export interface TenantSettings {
   defaultQuoteValidDays: number
   defaultPaymentTermsDays: number
   currency: string
+  quoteEmailFromAddress?: string | null
+  quoteEmailFromName?: string | null
+  quoteEmailReplyTo?: string | null
+  quoteEmailCopyOnApprove?: boolean
 }
 
 export interface AttributeFieldDef {
@@ -895,5 +899,39 @@ export const chatwootConversations = pgTable(
   (t) => [
     uniqueIndex('chatwoot_convos_tenant_ext_idx').on(t.tenantId, t.externalConversationId),
     index('chatwoot_convos_tenant_status_idx').on(t.tenantId, t.status)
+  ]
+)
+
+// ── 16. Quote Email Copy Send Log ─────────────────────────────────────────────
+
+export const quoteEmailSends = pgTable(
+  'quote_email_sends',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    quoteId: uuid('quote_id')
+      .notNull()
+      .references(() => quotes.id),
+    quoteVersion: integer('quote_version').notNull(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id),
+    trigger: text('trigger').notNull(), // 'approve' | 'manual'
+    recipient: text('recipient').notNull(),
+    sender: text('sender').notNull(),
+    replyTo: text('reply_to'),
+    resendMessageId: text('resend_message_id'),
+    status: text('status').notNull(), // 'sent' | 'failed' | 'skipped'
+    errorCode: text('error_code'),
+    errorMessage: text('error_message'),
+    idempotencyKey: text('idempotency_key'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    index('quote_email_sends_tenant_quote_idx').on(t.tenantId, t.quoteId),
+    index('quote_email_sends_rate_idx').on(t.tenantId, t.quoteId, t.userId, t.trigger, t.createdAt),
+    uniqueIndex('quote_email_sends_idem_idx').on(t.tenantId, t.idempotencyKey)
   ]
 )

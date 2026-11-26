@@ -3,8 +3,11 @@ import { getDb, schema } from '../db'
 import { generateOpaqueToken, sha256Hex, verifyPassword, verifyPkceS256 } from '../utils/crypto'
 import { Errors } from '../utils/errors'
 import { signSessionJwt, type ActorContext } from '../utils/auth-context'
-import { DEFAULT_AGENT_SCOPES, isValidScope, type Scope } from '../utils/scopes'
+import { isValidScope, type Scope } from '../utils/scopes'
+import { ADMIN_ONLY_SCOPES, MCP_SCOPES_SUPPORTED } from '../utils/mcp-scopes'
 import { recordAudit } from './audit.service'
+
+const ADMIN_SCOPE_SET = new Set<string>(ADMIN_ONLY_SCOPES)
 
 export async function loginWithPassword(email: string, password: string) {
   const db = await getDb()
@@ -186,8 +189,8 @@ export async function registerOAuthClient(input: {
   const clientId = generateOpaqueToken('bo_cli', 16)
   const allowedScopes =
     input.requestedScopes && input.requestedScopes.length > 0
-      ? input.requestedScopes.filter(isValidScope)
-      : [...DEFAULT_AGENT_SCOPES]
+      ? input.requestedScopes.filter((s) => isValidScope(s) && !ADMIN_SCOPE_SET.has(s))
+      : [...MCP_SCOPES_SUPPORTED]
 
   const [client] = await db
     .insert(schema.oauthClients)
@@ -246,11 +249,11 @@ export async function createOAuthAuthorizationCode(
     throw Errors.notFound('Tenant', targetTenantId)
   }
 
-  // Filter scopes to valid scopes (defaulting to read+draft agent scopes)
+  // Filter scopes to valid non-admin MCP scopes (defaulting to full MCP_SCOPES_SUPPORTED)
   const validScopes =
     input.scopes.length > 0
-      ? input.scopes.filter(isValidScope)
-      : [...DEFAULT_AGENT_SCOPES]
+      ? input.scopes.filter((s) => isValidScope(s) && !ADMIN_SCOPE_SET.has(s))
+      : [...MCP_SCOPES_SUPPORTED]
 
   const rawCode = generateOpaqueToken('bo_code', 24)
   const codeHash = sha256Hex(rawCode)

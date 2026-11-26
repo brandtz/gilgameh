@@ -30,7 +30,13 @@ export async function listAccessibleTenants(ctx: ActorContext) {
     .select({ tenant: schema.tenants })
     .from(schema.tenantMemberships)
     .innerJoin(schema.tenants, eq(schema.tenants.id, schema.tenantMemberships.tenantId))
-    .where(and(eq(schema.tenantMemberships.userId, ctx.userId), isNull(schema.tenants.deletedAt)))
+    .where(
+      and(
+        eq(schema.tenantMemberships.userId, ctx.userId),
+        isNull(schema.tenantMemberships.deletedAt),
+        isNull(schema.tenants.deletedAt)
+      )
+    )
   return rows.map((r) => r.tenant)
 }
 
@@ -40,6 +46,8 @@ export async function createTenant(
     slug: string
     name: string
     legalName?: string
+    contactName?: string
+    website?: string
     email?: string
     phone?: string
     address?: Record<string, string | undefined>
@@ -64,6 +72,8 @@ export async function createTenant(
         slug: input.slug,
         name: input.name,
         legalName: input.legalName ?? null,
+        contactName: input.contactName ?? null,
+        website: input.website ?? null,
         email: input.email ?? null,
         phone: input.phone ?? null,
         address: input.address ?? {}
@@ -94,6 +104,8 @@ export async function updateTenant(
   patch: Partial<{
     name: string
     legalName: string | null
+    contactName: string | null
+    website: string | null
     email: string | null
     phone: string | null
     address: schema.AddressJson
@@ -116,6 +128,8 @@ export async function updateTenant(
       .set({
         ...(patch.name !== undefined ? { name: patch.name } : {}),
         ...(patch.legalName !== undefined ? { legalName: patch.legalName } : {}),
+        ...(patch.contactName !== undefined ? { contactName: patch.contactName } : {}),
+        ...(patch.website !== undefined ? { website: patch.website } : {}),
         ...(patch.email !== undefined ? { email: patch.email } : {}),
         ...(patch.phone !== undefined ? { phone: patch.phone } : {}),
         ...(patch.address !== undefined ? { address: patch.address } : {}),

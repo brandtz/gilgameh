@@ -93,6 +93,68 @@ export async function getCustomerById(ctx: ActorContext, id: string) {
   return customer
 }
 
+export async function getCustomerFullDetails(ctx: ActorContext, id: string) {
+  const customer = await getCustomerById(ctx, id)
+  const db = await getDb()
+
+  const [interactionsRes, quotesList, ordersList, invoicesList, paymentsList] = await Promise.all([
+    listInteractions(ctx, { customerId: customer.id, limit: 100, offset: 0 }),
+    db
+      .select()
+      .from(schema.quotes)
+      .where(
+        and(
+          eq(schema.quotes.tenantId, ctx.tenantId),
+          eq(schema.quotes.customerId, customer.id),
+          isNull(schema.quotes.deletedAt)
+        )
+      )
+      .orderBy(desc(schema.quotes.createdAt)),
+    db
+      .select()
+      .from(schema.orders)
+      .where(
+        and(
+          eq(schema.orders.tenantId, ctx.tenantId),
+          eq(schema.orders.customerId, customer.id),
+          isNull(schema.orders.deletedAt)
+        )
+      )
+      .orderBy(desc(schema.orders.createdAt)),
+    db
+      .select()
+      .from(schema.invoices)
+      .where(
+        and(
+          eq(schema.invoices.tenantId, ctx.tenantId),
+          eq(schema.invoices.customerId, customer.id),
+          isNull(schema.invoices.deletedAt)
+        )
+      )
+      .orderBy(desc(schema.invoices.createdAt)),
+    db
+      .select()
+      .from(schema.payments)
+      .where(
+        and(
+          eq(schema.payments.tenantId, ctx.tenantId),
+          eq(schema.payments.customerId, customer.id),
+          isNull(schema.payments.deletedAt)
+        )
+      )
+      .orderBy(desc(schema.payments.paidAt))
+  ])
+
+  return {
+    customer,
+    interactions: interactionsRes.items,
+    quotes: quotesList.map((q) => ({ ...q, pdfUrl: `/api/v1/quotes/${q.id}/pdf` })),
+    orders: ordersList,
+    invoices: invoicesList.map((i) => ({ ...i, pdfUrl: `/api/v1/invoices/${i.id}/pdf` })),
+    payments: paymentsList
+  }
+}
+
 export async function createCustomer(
   ctx: ActorContext,
   input: {

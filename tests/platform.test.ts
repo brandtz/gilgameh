@@ -15,9 +15,24 @@ import { createTenant, updateTenant } from '../server/services/tenant.service'
 import {
   createCustomer,
   findCustomerCandidates,
+  getCustomerFullDetails,
   listInteractions,
   logInteraction
 } from '../server/services/customer.service'
+import {
+  addTenantMember,
+  changeUserPassword,
+  getUserProfile,
+  listTenantMembers,
+  updateTenantMember,
+  updateUserProfile
+} from '../server/services/user.service'
+import {
+  linkChatwootContactToCustomer,
+  listTenantChatwootData,
+  recordChatwootWebhookMessage,
+  saveTenantChatwootConfig
+} from '../server/services/chatwoot.service'
 import { createCatalogItem } from '../server/services/catalog.service'
 import {
   approveAndSendQuote,
@@ -378,5 +393,126 @@ describe('Back Office Platform — End-to-End Integration & Acceptance Suite', (
     // 7. Revoking the OAuth agent token immediately blocks further authentication
     await revokeOAuthToken(ownerCtx, agentCtx.tokenId!)
     await expect(resolveAuthFromToken(agentToken)).rejects.toBeInstanceOf(AppError)
+  })
+
+  it('Multi-Tenant RBAC, User Profiles, Customer Full Details, Branded Logo PDFs, and Tenant-Isolated Chatwoot', async () => {
+    // 1. Operator onboards a second business: Guided Growth Early Learning
+    const guidedGrowth = await createTenant(operatorCtx, {
+      slug: 'guided-growth',
+      name: 'Guided Growth Early Learning',
+      contactName: 'Mindy',
+      email: 'info@guidedgrowth.example'
+    })
+
+    // 2. Single-tenant owner (Drew) ONLY sees Studio 37 and is blocked from switching to Guided Growth
+    const ownerLogin = await loginWithPassword('drew@studio37.local', 'Studio37Owner!2026')
+    expect(ownerLogin.tenants.length).toBe(1)
+    expect(ownerLogin.tenants[0].tenantSlug).toBe('studio-37')
+    await expect(resolveAuthFromToken(ownerLogin.token, guidedGrowth.id)).rejects.toMatchObject({
+      statusCode: 403,
+      code: 'FORBIDDEN'
+    })
+
+    // Operator sees both businesses and can switch freely
+    const opLogin = await loginWithPassword('matthew@bwe.local', 'BweOperator!2026')
+    expect(opLogin.tenants.length).toBeGreaterThanOrEqual(2)
+    const opInGuided = await resolveAuthFromToken(opLogin.token, guidedGrowth.id)
+    expect(opInGuided.tenantId).toBe(guidedGrowth.id)
+
+    // 3. RBAC Team Management + Custom Scopes
+    const member = await addTenantMember(ownerCtx, {
+      email: 'shop.lead@studio37.local',
+      name: 'Sam Carpenter',
+      phone: '503-555-0190',
+      title: 'Shop Lead',
+      password: 'ShopLeadPassword!2026',
+      role: 'viewer'
+    })
+    expect(member.effectiveScopes).not.toContain('quotes:draft')
+
+    const updatedMember = await updateTenantMember(ownerCtx, member.membershipId, {
+      role: 'manager',
+      scopes: ['customers:read', 'quotes:read', 'quotes:draft']
+    })
+    expect(updatedMember.effectiveScopes).toEqual(['customers:read', 'quotes:read', 'quotes:draft'])
+
+    const teamList = await listTenantMembers(ownerCtx)
+    expect(teamList.some((m) => m.email === 'shop.lead@studio37.local')).toBe(true)
+
+    // 4. User Profile Management & Password Change
+    const leadLogin = await loginWithPassword('shop.lead@studio37.local', 'ShopLeadPassword!2026')
+    const leadCtx = await resolveAuthFromToken(leadLogin.token)
+    const updatedProfile = await updateUserProfile(leadCtx, {
+      name: 'Samuel Carpenter',
+      phone: '503-555-0191',
+      title: 'Lead Craftsman'
+    })
+    expect(updatedProfile.name).toBe('Samuel Carpenter')
+    expect(updatedProfile.title).toBe('Lead Craftsman')
+
+    await changeUserPassword(leadCtx, 'ShopLeadPassword!2026', 'NewSecurePassword!2026')
+    const relogin = await loginWithPassword('shop.lead@studio37.local', 'NewSecurePassword!2026')
+    expect(relogin.user.name).toBe('Samuel Carpenter')
+    const fetchedProfile = await getUserProfile(leadCtx)
+    expect(fetchedProfile.phone).toBe('503-555-0191')
+
+    // 5. Customer Full Details returns connected interactions, quotes, orders, invoices, payments
+    const fullCust = await getCustomerFullDetails(ownerCtx, seed.madeInOregonCustomerId)
+    expect(fullCust.customer.name).toBe('Made in Oregon')
+    expect(fullCust.quotes.length).toBeGreaterThanOrEqual(1)
+    expect(fullCust.orders.length).toBeGreaterThanOrEqual(1)
+    expect(fullCust.invoices.length).toBeGreaterThanOrEqual(1)
+    expect(fullCust.payments.length).toBeGreaterThanOrEqual(2)
+    expect(fullCust.interactions.length).toBeGreaterThanOrEqual(1)
+
+    // 6. Tenant-specific PDF Branding (1x1 valid PNG logo + Make checks payable to...)
+    const onePxPngBase64 =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
+    await updateTenant(ownerCtx, {
+      contactName: 'Drew',
+      website: 'https://studio37customdesigns.com',
+      branding: {
+        primaryColor: '#1f2937',
+        accentColor: '#b45309',
+        logoDataUrl: onePxPngBase64,
+        headerText: 'Handcrafted Oregon Millwork',
+        footerText: 'Thank you for supporting Studio 37!',
+        paymentInstructions: 'Make checks payable to Studio 37 Woodworking LLC. Cash or check preferred.'
+      }
+    })
+    const quotePdf = await renderQuotePdfBytes(ownerCtx, fullCust.quotes[0].id)
+    expect(Buffer.from(quotePdf.bytes.slice(0, 5)).toString('utf8')).toBe('%PDF-')
+    const invPdf = await renderInvoicePdfBytes(ownerCtx, fullCust.invoices[0].id)
+    expect(Buffer.from(invPdf.bytes.slice(0, 5)).toString('utf8')).toBe('%PDF-')
+
+    // 7. Tenant-isolated Chatwoot Contacts & Conversations
+    await saveTenantChatwootConfig(ownerCtx, {
+      isEnabled: true,
+      baseUrl: 'https://chatwoot.studio37.example',
+      accountId: '37',
+      apiToken: 'cw_token_studio37_secret'
+    })
+    await recordChatwootWebhookMessage(seed.tenantId, {
+      externalContactId: 'cw-contact-99',
+      name: 'Taylor Brooks',
+      email: 'taylor@example.com',
+      externalConversationId: 'cw-conv-500',
+      direction: 'incoming',
+      content: 'Hi Drew, do you flatten cedar slabs?'
+    })
+
+    const studioCw = await listTenantChatwootData(ownerCtx)
+    expect(studioCw.contacts.length).toBe(1)
+    expect(studioCw.conversations.length).toBe(1)
+    expect(studioCw.config.accountId).toBe('37')
+
+    const linked = await linkChatwootContactToCustomer(ownerCtx, studioCw.contacts[0].id)
+    expect(linked.created).toBe(true)
+
+    // Guided Growth sees ZERO of Studio 37's Chatwoot config, contacts, or conversations!
+    const guidedCw = await listTenantChatwootData(opInGuided)
+    expect(guidedCw.config.accountId).toBe('')
+    expect(guidedCw.contacts.length).toBe(0)
+    expect(guidedCw.conversations.length).toBe(0)
   })
 })

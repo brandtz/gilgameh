@@ -57,7 +57,9 @@ export const createTenantSchema = z.object({
   slug: z.string().min(2).max(60).regex(/^[a-z0-9-]+$/),
   name: z.string().min(1).max(160),
   legalName: z.string().max(200).optional(),
-  email: z.string().email().optional(),
+  contactName: z.string().max(160).optional(),
+  website: z.string().url().optional().or(z.literal('')),
+  email: z.string().email().optional().or(z.literal('')),
   phone: z.string().max(40).optional(),
   address: addressSchema.optional()
 })
@@ -65,15 +67,30 @@ export const createTenantSchema = z.object({
 export const updateTenantSchema = z.object({
   name: z.string().min(1).max(160).optional(),
   legalName: z.string().max(200).optional().nullable(),
-  email: z.string().email().optional().nullable(),
+  contactName: z.string().max(160).optional().nullable(),
+  website: z.string().url().optional().nullable().or(z.literal('')),
+  email: z.string().email().optional().nullable().or(z.literal('')),
   phone: z.string().max(40).optional().nullable(),
   address: addressSchema.optional(),
   branding: z
     .object({
       logoUrl: z.string().url().optional().or(z.literal('')),
+      logoDataUrl: z
+        .string()
+        .max(2_000_000)
+        .refine(
+          (val) => !val || /^data:image\/(png|jpeg|jpg);base64,[A-Za-z0-9+/=]+$/.test(val),
+          'Logo must be a PNG or JPEG image'
+        )
+        .optional()
+        .or(z.literal('')),
       primaryColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
       accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
-      footerText: z.string().max(300).optional()
+      headerText: z.string().max(200).optional(),
+      footerText: z.string().max(500).optional(),
+      paymentInstructions: z.string().max(1000).optional(),
+      quoteTerms: z.string().max(1000).optional(),
+      invoiceTerms: z.string().max(1000).optional()
     })
     .optional(),
   numberingSettings: z
@@ -329,4 +346,50 @@ export const updateIntegrationConfigSchema = z.object({
   isEnabled: z.boolean(),
   config: z.record(z.unknown()).default({}),
   webhookSecret: z.string().min(8).max(200).optional().nullable()
+})
+
+// ── Profile & Team RBAC ───────────────────────────────────────────────────────
+
+export const updateProfileSchema = z.object({
+  name: z.string().min(1).max(160).optional(),
+  email: z.string().email().optional(),
+  phone: z.string().max(40).optional().nullable(),
+  title: z.string().max(120).optional().nullable()
+})
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(10, 'New password must be at least 10 characters').max(128)
+})
+
+export const tenantRoleEnum = z.enum(['owner', 'manager', 'staff', 'viewer', 'operator'])
+
+export const createTenantMemberSchema = z.object({
+  email: z.string().email(),
+  name: z.string().min(1).max(160),
+  phone: z.string().max(40).optional().nullable(),
+  title: z.string().max(120).optional().nullable(),
+  password: z.string().min(10, 'Password must be at least 10 characters').max(128).optional(),
+  role: tenantRoleEnum.default('staff'),
+  scopes: z.array(scopeEnum).optional().nullable()
+})
+
+export const updateTenantMemberSchema = z.object({
+  role: tenantRoleEnum.optional(),
+  scopes: z.array(scopeEnum).optional().nullable(),
+  isActive: z.boolean().optional()
+})
+
+// ── Chatwoot ──────────────────────────────────────────────────────────────────
+
+export const chatwootConfigSchema = z.object({
+  isEnabled: z.boolean(),
+  baseUrl: z.string().url().optional().or(z.literal('')),
+  accountId: z.string().max(40).optional().or(z.literal('')),
+  apiToken: z.string().max(300).optional().or(z.literal('')),
+  webhookSecret: z.string().min(8).max(200).optional().nullable()
+})
+
+export const chatwootReplySchema = z.object({
+  content: z.string().min(1).max(5000)
 })

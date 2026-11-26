@@ -22,17 +22,36 @@ export async function loginWithPassword(email: string, password: string) {
     throw Errors.unauthorized('Invalid email or password')
   }
 
-  // Find user's primary tenant membership
-  const memberships = await db
-    .select({
-      tenantId: schema.tenantMemberships.tenantId,
-      role: schema.tenantMemberships.role,
-      tenantName: schema.tenants.name,
-      tenantSlug: schema.tenants.slug
-    })
-    .from(schema.tenantMemberships)
-    .innerJoin(schema.tenants, eq(schema.tenants.id, schema.tenantMemberships.tenantId))
-    .where(and(eq(schema.tenantMemberships.userId, user.id), isNull(schema.tenants.deletedAt)))
+  // Find accessible tenants: BWE operators can access all active tenants; others only active memberships
+  let memberships: Array<{ tenantId: string; role: string; tenantName: string; tenantSlug: string }>
+  if (user.role === 'bwe_operator') {
+    const allTenants = await db
+      .select({
+        tenantId: schema.tenants.id,
+        tenantName: schema.tenants.name,
+        tenantSlug: schema.tenants.slug
+      })
+      .from(schema.tenants)
+      .where(isNull(schema.tenants.deletedAt))
+    memberships = allTenants.map((t) => ({ ...t, role: 'operator' }))
+  } else {
+    memberships = await db
+      .select({
+        tenantId: schema.tenantMemberships.tenantId,
+        role: schema.tenantMemberships.role,
+        tenantName: schema.tenants.name,
+        tenantSlug: schema.tenants.slug
+      })
+      .from(schema.tenantMemberships)
+      .innerJoin(schema.tenants, eq(schema.tenants.id, schema.tenantMemberships.tenantId))
+      .where(
+        and(
+          eq(schema.tenantMemberships.userId, user.id),
+          isNull(schema.tenantMemberships.deletedAt),
+          isNull(schema.tenants.deletedAt)
+        )
+      )
+  }
 
   if (memberships.length === 0) {
     throw Errors.forbidden('User has no active tenant membership')

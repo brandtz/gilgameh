@@ -156,20 +156,42 @@ export async function resolveAuthFromToken(
 
   let tenantId = claims.tid
   const isOperator = claims.role === 'bwe_operator'
+  let effectiveRole = claims.role
+  let customScopes: Scope[] | null = null
 
-  // Only BWE operators may switch tenant via X-Tenant-Id header (verified against DB)
-  if (overrideTenantId && overrideTenantId !== tenantId) {
-    if (!isOperator) {
-      throw Errors.forbidden('Tenant switching is restricted to BWE operators')
+  // Resolve requested tenant (either override header or JWT default) and verify membership strictly
+  const requestedTenantId = overrideTenantId || tenantId
+  if (isOperator) {
+    if (overrideTenantId && overrideTenantId !== tenantId) {
+      const [targetTenant] = await db
+        .select({ id: schema.tenants.id })
+        .from(schema.tenants)
+        .where(and(eq(schema.tenants.id, overrideTenantId), isNull(schema.tenants.deletedAt)))
+      if (!targetTenant) {
+        throw Errors.notFound('Tenant', overrideTenantId)
+      }
+      tenantId = targetTenant.id
     }
-    const [targetTenant] = await db
-      .select({ id: schema.tenants.id })
-      .from(schema.tenants)
-      .where(and(eq(schema.tenants.id, overrideTenantId), isNull(schema.tenants.deletedAt)))
-    if (!targetTenant) {
-      throw Errors.notFound('Tenant', overrideTenantId)
+  } else {
+    // Non-operators may ONLY access tenants where they hold an active tenant_memberships row
+    const [membership] = await db
+      .select()
+      .from(schema.tenantMemberships)
+      .where(
+        and(
+          eq(schema.tenantMemberships.userId, claims.sub),
+          eq(schema.tenantMemberships.tenantId, requestedTenantId),
+          isNull(schema.tenantMemberships.deletedAt)
+        )
+      )
+    if (!membership) {
+      throw Errors.forbidden('You do not have permission to access this business workspace')
     }
-    tenantId = targetTenant.id
+    tenantId = membership.tenantId
+    effectiveRole = membership.role
+    if (Array.isArray(membership.scopes) && membership.scopes.length > 0) {
+      customScopes = membership.scopes as Scope[]
+    }
   }
 
   return {
@@ -178,8 +200,8 @@ export async function resolveAuthFromToken(
     actorLabel: claims.name,
     userId: claims.sub,
     tenantId,
-    role: claims.role,
-    scopes: getScopesForRole(claims.role),
+    role: effectiveRole,
+    scopes: customScopes ?? getScopesForRole(effectiveRole),
     requestId
   }
 }

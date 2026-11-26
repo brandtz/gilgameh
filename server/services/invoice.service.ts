@@ -255,6 +255,8 @@ export async function approveAndSendInvoice(
     tenant: {
       name: tenant.name,
       legalName: tenant.legalName,
+      contactName: tenant.contactName,
+      website: tenant.website,
       email: tenant.email,
       phone: tenant.phone,
       address: tenant.address,
@@ -332,6 +334,8 @@ export async function renderInvoicePdfBytes(ctx: ActorContext, invoiceId: string
     tenant: {
       name: tenant.name,
       legalName: tenant.legalName,
+      contactName: tenant.contactName,
+      website: tenant.website,
       email: tenant.email,
       phone: tenant.phone,
       address: tenant.address,

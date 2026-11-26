@@ -24,6 +24,8 @@ export async function seedDatabase(): Promise<SeedResult> {
         slug: 'studio-37',
         name: 'Studio 37',
         legalName: 'Studio 37 Woodworking LLC',
+        contactName: 'Drew',
+        website: 'https://studio37customdesigns.com',
         email: 'drew@studio37.local',
         phone: '(503) 555-0137',
         address: {
@@ -36,7 +38,9 @@ export async function seedDatabase(): Promise<SeedResult> {
         branding: {
           primaryColor: '#1f2937',
           accentColor: '#b45309',
-          footerText: 'Handcrafted in Oregon — Thank you for supporting Studio 37!'
+          headerText: 'Custom Woodworking & Millwork',
+          footerText: 'Handcrafted in Oregon — Thank you for supporting Studio 37!',
+          paymentInstructions: 'Make checks payable to Studio 37 Woodworking LLC. Cash or check preferred.'
         },
         numberingSettings: {
           quotePrefix: 'Q',

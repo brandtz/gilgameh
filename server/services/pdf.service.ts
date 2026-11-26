@@ -31,6 +31,8 @@ export interface PdfDocumentInput {
   tenant: {
     name: string
     legalName?: string | null
+    contactName?: string | null
+    website?: string | null
     email?: string | null
     phone?: string | null
     address?: AddressJson
@@ -70,39 +72,105 @@ export async function generateBrandedDocumentPdf(input: PdfDocumentInput): Promi
   const currency = input.tenant.currency || 'USD'
 
   // Top Header Banner
+  const headerHeight = 108
   page.drawRectangle({
     x: 0,
-    y: height - 96,
+    y: height - headerHeight,
     width,
-    height: 96,
+    height: headerHeight,
     color: primary
   })
   page.drawRectangle({
     x: 0,
-    y: height - 101,
+    y: height - headerHeight - 5,
     width,
     height: 5,
     color: accent
   })
 
-  // Tenant Name & Info
+  // Optional Tenant Logo (PNG or JPEG data URL stored per-tenant)
+  let textStartX = 44
+  const logoDataUrl = input.tenant.branding?.logoDataUrl
+  if (logoDataUrl && logoDataUrl.startsWith('data:image/')) {
+    try {
+      const [meta, b64] = logoDataUrl.split(',')
+      if (b64) {
+        const imgBytes = Buffer.from(b64, 'base64')
+        const embedded = meta.includes('png')
+          ? await pdfDoc.embedPng(imgBytes)
+          : await pdfDoc.embedJpg(imgBytes)
+        const maxH = 62
+        const maxW = 90
+        const scale = Math.min(maxW / embedded.width, maxH / embedded.height, 1)
+        const drawW = embedded.width * scale
+        const drawH = embedded.height * scale
+        page.drawImage(embedded, {
+          x: 40,
+          y: height - headerHeight / 2 - drawH / 2,
+          width: drawW,
+          height: drawH
+        })
+        textStartX = 40 + drawW + 14
+      }
+    } catch {
+      // Ignore malformed logo gracefully so PDF generation never fails
+    }
+  }
+
+  // Tenant Name, Custom Header Text & Contact Info
   page.drawText(input.tenant.name, {
-    x: 44,
-    y: height - 46,
-    size: 20,
+    x: textStartX,
+    y: height - 38,
+    size: 19,
     font: fontBold,
     color: rgb(1, 1, 1)
   })
-  const tenantSub = [input.tenant.legalName, input.tenant.email, input.tenant.phone]
+  if (input.tenant.branding?.headerText) {
+    page.drawText(input.tenant.branding.headerText.slice(0, 68), {
+      x: textStartX,
+      y: height - 54,
+      size: 9.5,
+      font: fontBold,
+      color: rgb(0.95, 0.85, 0.6)
+    })
+  }
+  const tenantLine1 = [input.tenant.legalName, input.tenant.contactName ? `Attn: ${input.tenant.contactName}` : null]
     .filter(Boolean)
     .join('  |  ')
-  if (tenantSub) {
-    page.drawText(tenantSub.slice(0, 85), {
-      x: 44,
-      y: height - 68,
-      size: 9,
+  if (tenantLine1) {
+    page.drawText(tenantLine1.slice(0, 72), {
+      x: textStartX,
+      y: height - 70,
+      size: 8.5,
       font: fontRegular,
-      color: rgb(0.85, 0.88, 0.92)
+      color: rgb(0.86, 0.89, 0.93)
+    })
+  }
+  const tenantAddr = [
+    input.tenant.address?.line1,
+    [input.tenant.address?.city, input.tenant.address?.state, input.tenant.address?.postalCode].filter(Boolean).join(' ')
+  ]
+    .filter(Boolean)
+    .join(', ')
+  const tenantLine2 = [input.tenant.phone, input.tenant.email, input.tenant.website || tenantAddr]
+    .filter(Boolean)
+    .join('  |  ')
+  if (tenantLine2) {
+    page.drawText(tenantLine2.slice(0, 78), {
+      x: textStartX,
+      y: height - 84,
+      size: 8,
+      font: fontRegular,
+      color: rgb(0.8, 0.84, 0.9)
+    })
+  }
+  if (tenantAddr && input.tenant.website) {
+    page.drawText(tenantAddr.slice(0, 78), {
+      x: textStartX,
+      y: height - 96,
+      size: 7.5,
+      font: fontRegular,
+      color: rgb(0.75, 0.8, 0.86)
     })
   }
 
@@ -275,14 +343,31 @@ export async function generateBrandedDocumentPdf(input: PdfDocumentInput): Promi
     })
   }
 
-  // Notes
-  if (input.notes) {
-    const notesY = Math.max(y - 45, 95)
-    page.drawText('NOTES', { x: 44, y: notesY, size: 8.5, font: fontBold, color: muted })
-    page.drawText(input.notes.slice(0, 120), {
-      x: 44,
-      y: notesY - 15,
+  // Payment Instructions ("Make checks payable to...") & Notes
+  let infoY = Math.max(y - 36, 130)
+  const paymentInstructions = input.tenant.branding?.paymentInstructions
+  if (paymentInstructions) {
+    page.drawRectangle({ x: 44, y: infoY - 26, width: width - 88, height: 38, color: lightBg })
+    page.drawText('PAYMENT INSTRUCTIONS', { x: 52, y: infoY - 2, size: 8, font: fontBold, color: accent })
+    page.drawText(paymentInstructions.slice(0, 105), {
+      x: 52,
+      y: infoY - 16,
       size: 9.5,
+      font: fontBold,
+      color: dark
+    })
+    infoY -= 44
+  }
+
+  const termsText =
+    input.docType === 'QUOTE' ? input.tenant.branding?.quoteTerms : input.tenant.branding?.invoiceTerms
+  const combinedNotes = [input.notes, termsText].filter(Boolean).join(' — ')
+  if (combinedNotes) {
+    page.drawText('NOTES & TERMS', { x: 44, y: infoY, size: 8.5, font: fontBold, color: muted })
+    page.drawText(combinedNotes.slice(0, 115), {
+      x: 44,
+      y: infoY - 14,
+      size: 9,
       font: fontRegular,
       color: dark
     })
@@ -290,9 +375,15 @@ export async function generateBrandedDocumentPdf(input: PdfDocumentInput): Promi
 
   // Footer
   if (input.tenant.branding?.footerText) {
-    page.drawText(input.tenant.branding.footerText.slice(0, 95), {
+    page.drawLine({
+      start: { x: 44, y: 50 },
+      end: { x: width - 44, y: 50 },
+      thickness: 0.5,
+      color: rgb(0.86, 0.88, 0.92)
+    })
+    page.drawText(input.tenant.branding.footerText.slice(0, 105), {
       x: 44,
-      y: 36,
+      y: 34,
       size: 8.5,
       font: fontRegular,
       color: muted

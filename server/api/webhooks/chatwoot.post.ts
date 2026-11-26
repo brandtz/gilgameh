@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { defineApiHandler, Errors } from '../../utils/errors'
 import { verifyInboundWebhookSignature } from '../../services/webhook.service'
 import { createCustomer, findCustomerCandidates, logInteraction, updateCustomer } from '../../services/customer.service'
+import { recordChatwootWebhookMessage } from '../../services/chatwoot.service'
 import type { ActorContext } from '../../utils/auth-context'
 import { ALL_SCOPES } from '../../utils/scopes'
 
@@ -66,6 +67,17 @@ export default defineEventHandler(
       rawContent: payload.content ?? null,
       containsExternalInput: payload.message_type === 'incoming',
       externalRef: payload.conversation_id ? `chatwoot:${payload.conversation_id}` : undefined
+    })
+
+    await recordChatwootWebhookMessage(tenantId, {
+      externalContactId: String(payload.contact.id),
+      name: payload.contact.name,
+      email: payload.contact.email ?? null,
+      phone: payload.contact.phone_number ?? null,
+      customerId: customer.id,
+      externalConversationId: String(payload.conversation_id || `contact-${payload.contact.id}`),
+      direction: payload.message_type,
+      content: payload.content || `(Event: ${payload.event})`
     })
 
     return { data: { customerId: customer.id, interactionId: interaction.id, waitingOnOwner: payload.message_type === 'incoming' } }

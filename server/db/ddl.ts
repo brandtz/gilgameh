@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS tenants (
   slug text NOT NULL UNIQUE,
   name text NOT NULL,
   legal_name text,
+  contact_name text,
+  website text,
   email text,
   phone text,
   address jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -25,6 +27,8 @@ CREATE TABLE IF NOT EXISTS users (
   email text NOT NULL UNIQUE,
   password_hash text NOT NULL,
   name text NOT NULL,
+  phone text,
+  title text,
   role text NOT NULL DEFAULT 'tenant_staff',
   is_active boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -37,6 +41,7 @@ CREATE TABLE IF NOT EXISTS tenant_memberships (
   tenant_id uuid NOT NULL REFERENCES tenants(id),
   user_id uuid NOT NULL REFERENCES users(id),
   role text NOT NULL DEFAULT 'staff',
+  scopes jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   deleted_at timestamptz,
@@ -486,6 +491,46 @@ CREATE TABLE IF NOT EXISTS integration_configs (
   UNIQUE (tenant_id, provider)
 );
 
+CREATE TABLE IF NOT EXISTS chatwoot_contacts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id),
+  external_contact_id text NOT NULL,
+  customer_id uuid REFERENCES customers(id),
+  name text NOT NULL,
+  email text,
+  phone text,
+  avatar_url text,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  last_activity_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, external_contact_id)
+);
+
+CREATE TABLE IF NOT EXISTS chatwoot_conversations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id uuid NOT NULL REFERENCES tenants(id),
+  external_conversation_id text NOT NULL,
+  chatwoot_contact_id uuid NOT NULL REFERENCES chatwoot_contacts(id),
+  inbox_name text NOT NULL DEFAULT 'Default Inbox',
+  channel text NOT NULL DEFAULT 'web',
+  status text NOT NULL DEFAULT 'open',
+  unread_count integer NOT NULL DEFAULT 0,
+  last_message_preview text,
+  last_message_at timestamptz NOT NULL DEFAULT now(),
+  messages jsonb NOT NULL DEFAULT '[]'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, external_conversation_id)
+);
+
+-- Idempotent column upgrades for existing deployments
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS contact_name text;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS website text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS title text;
+ALTER TABLE tenant_memberships ADD COLUMN IF NOT EXISTS scopes jsonb;
+
 CREATE INDEX IF NOT EXISTS customers_tenant_name_idx ON customers(tenant_id, name);
 CREATE INDEX IF NOT EXISTS customers_tenant_status_idx ON customers(tenant_id, status);
 CREATE INDEX IF NOT EXISTS interactions_tenant_customer_idx ON interactions(tenant_id, customer_id);
@@ -501,4 +546,6 @@ CREATE INDEX IF NOT EXISTS stock_movements_tenant_item_idx ON stock_movements(te
 CREATE INDEX IF NOT EXISTS expenses_tenant_fingerprint_idx ON expenses(tenant_id, fingerprint);
 CREATE INDEX IF NOT EXISTS audit_logs_tenant_created_idx ON audit_logs(tenant_id, created_at);
 CREATE INDEX IF NOT EXISTS webhook_deliveries_tenant_idx ON webhook_deliveries(tenant_id, created_at);
+CREATE INDEX IF NOT EXISTS chatwoot_contacts_tenant_idx ON chatwoot_contacts(tenant_id);
+CREATE INDEX IF NOT EXISTS chatwoot_convos_tenant_status_idx ON chatwoot_conversations(tenant_id, status);
 `

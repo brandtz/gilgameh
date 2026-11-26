@@ -11,20 +11,59 @@ export interface AuthMeResponse {
     id: string
     slug: string
     name: string
-    legalName?: string
-    email?: string
-    phone?: string
-    branding: { primaryColor: string; accentColor: string; footerText?: string; logoUrl?: string }
-    taxSettings: { defaultTaxRateBps: number; taxLabel: string }
-    settings: { allowAgentApproveScopes: boolean; defaultQuoteValidDays: number; defaultPaymentTermsDays: number; currency: string }
-    numberingSettings: { quotePrefix: string; nextQuoteNumber: number; orderPrefix: string; nextOrderNumber: number; invoicePrefix: string; nextInvoiceNumber: number }
+    legalName?: string | null
+    contactName?: string | null
+    website?: string | null
+    email?: string | null
+    phone?: string | null
+    address?: {
+      line1?: string
+      line2?: string
+      city?: string
+      state?: string
+      postalCode?: string
+      country?: string
+    }
+    branding: {
+      primaryColor: string
+      accentColor: string
+      logoUrl?: string
+      logoDataUrl?: string
+      headerText?: string
+      footerText?: string
+      paymentInstructions?: string
+      quoteTerms?: string
+      invoiceTerms?: string
+    }
+    taxSettings: { defaultTaxRateBps: number; taxLabel: string; taxId?: string }
+    settings: {
+      allowAgentApproveScopes: boolean
+      defaultQuoteValidDays: number
+      defaultPaymentTermsDays: number
+      currency: string
+    }
+    numberingSettings: {
+      quotePrefix: string
+      nextQuoteNumber: number
+      orderPrefix: string
+      nextOrderNumber: number
+      invoicePrefix: string
+      nextInvoiceNumber: number
+    }
   }
   tenants: Array<{ id: string; slug: string; name: string }>
 }
 
+const TENANT_STORAGE_KEY = 'bo_active_tenant_id'
+
 export function useAuthState() {
   const auth = useState<AuthMeResponse | null>('bo_auth', () => null)
-  const activeTenantId = useState<string>('bo_active_tenant_id', () => '')
+  const activeTenantId = useState<string>('bo_active_tenant_id', () => {
+    if (import.meta.client) {
+      return localStorage.getItem(TENANT_STORAGE_KEY) || ''
+    }
+    return ''
+  })
   const toast = useState<{ type: 'ok' | 'err'; message: string } | null>('bo_toast', () => null)
 
   function showToast(message: string, type: 'ok' | 'err' = 'ok') {
@@ -32,6 +71,19 @@ export function useAuthState() {
     setTimeout(() => {
       if (toast.value?.message === message) toast.value = null
     }, 4500)
+  }
+
+  function setActiveTenant(tenantId: string) {
+    activeTenantId.value = tenantId
+    if (import.meta.client) {
+      if (tenantId) localStorage.setItem(TENANT_STORAGE_KEY, tenantId)
+      else localStorage.removeItem(TENANT_STORAGE_KEY)
+    }
+  }
+
+  function hasScope(scope: string): boolean {
+    const scopes = auth.value?.actor?.scopes || []
+    return scopes.includes('*') || scopes.includes(scope)
   }
 
   async function apiFetch<T = any>(path: string, options: Record<string, any> = {}): Promise<T> {
@@ -58,24 +110,56 @@ export function useAuthState() {
     try {
       const res = await apiFetch<{ data: AuthMeResponse }>('/api/v1/auth/me')
       auth.value = res.data
-      if (!activeTenantId.value) {
-        activeTenantId.value = res.data.tenant.id
+      const allowedIds = new Set(res.data.tenants.map((t) => t.id))
+      if (!activeTenantId.value || !allowedIds.has(activeTenantId.value)) {
+        setActiveTenant(res.data.tenant.id)
       }
       return res.data
     } catch {
+      if (activeTenantId.value) {
+        setActiveTenant('')
+        try {
+          const retry = await $fetch<{ data: AuthMeResponse }>('/api/v1/auth/me', {
+            credentials: 'include'
+          })
+          auth.value = retry.data
+          setActiveTenant(retry.data.tenant.id)
+          return retry.data
+        } catch {
+          auth.value = null
+          return null
+        }
+      }
       auth.value = null
       return null
     }
   }
 
+  async function selectBusiness(tenantId: string) {
+    setActiveTenant(tenantId)
+    await loadMe()
+    await navigateTo('/')
+  }
+
   async function logout() {
     await $fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' })
     auth.value = null
-    activeTenantId.value = ''
+    setActiveTenant('')
     await navigateTo('/login')
   }
 
-  return { auth, activeTenantId, toast, showToast, apiFetch, loadMe, logout }
+  return {
+    auth,
+    activeTenantId,
+    toast,
+    showToast,
+    setActiveTenant,
+    hasScope,
+    apiFetch,
+    loadMe,
+    selectBusiness,
+    logout
+  }
 }
 
 export function formatMoney(cents: number | null | undefined, currency = 'USD'): string {

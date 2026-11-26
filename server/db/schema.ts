@@ -24,9 +24,14 @@ export interface AddressJson {
 
 export interface TenantBranding {
   logoUrl?: string
+  logoDataUrl?: string
   primaryColor: string
   accentColor: string
+  headerText?: string
   footerText?: string
+  paymentInstructions?: string
+  quoteTerms?: string
+  invoiceTerms?: string
 }
 
 export interface TenantNumberingSettings {
@@ -77,6 +82,8 @@ export const tenants = pgTable(
     slug: text('slug').notNull(),
     name: text('name').notNull(),
     legalName: text('legal_name'),
+    contactName: text('contact_name'),
+    website: text('website'),
     email: text('email'),
     phone: text('phone'),
     address: jsonb('address').$type<AddressJson>().notNull().default({}),
@@ -122,6 +129,8 @@ export const users = pgTable(
     email: text('email').notNull(),
     passwordHash: text('password_hash').notNull(),
     name: text('name').notNull(),
+    phone: text('phone'),
+    title: text('title'),
     role: text('role').notNull().default('tenant_staff'), // 'bwe_operator' | 'tenant_owner' | 'tenant_staff'
     isActive: boolean('is_active').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -141,7 +150,8 @@ export const tenantMemberships = pgTable(
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id),
-    role: text('role').notNull().default('staff'), // 'operator' | 'owner' | 'staff'
+    role: text('role').notNull().default('staff'), // 'operator' | 'owner' | 'manager' | 'staff' | 'viewer'
+    scopes: jsonb('scopes').$type<string[] | null>(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true })
@@ -830,4 +840,60 @@ export const integrationConfigs = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
   },
   (t) => [uniqueIndex('integration_configs_tenant_provider_idx').on(t.tenantId, t.provider)]
+)
+
+// ── 15. Tenant-Isolated Chatwoot Contacts & Conversations ─────────────────────
+
+export const chatwootContacts = pgTable(
+  'chatwoot_contacts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    externalContactId: text('external_contact_id').notNull(),
+    customerId: uuid('customer_id').references(() => customers.id),
+    name: text('name').notNull(),
+    email: text('email'),
+    phone: text('phone'),
+    avatarUrl: text('avatar_url'),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    lastActivityAt: timestamp('last_activity_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex('chatwoot_contacts_tenant_ext_idx').on(t.tenantId, t.externalContactId),
+    index('chatwoot_contacts_tenant_idx').on(t.tenantId)
+  ]
+)
+
+export const chatwootConversations = pgTable(
+  'chatwoot_conversations',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    externalConversationId: text('external_conversation_id').notNull(),
+    chatwootContactId: uuid('chatwoot_contact_id')
+      .notNull()
+      .references(() => chatwootContacts.id),
+    inboxName: text('inbox_name').notNull().default('Default Inbox'),
+    channel: text('channel').notNull().default('web'),
+    status: text('status').notNull().default('open'), // 'open' | 'pending' | 'resolved' | 'snoozed'
+    unreadCount: integer('unread_count').notNull().default(0),
+    lastMessagePreview: text('last_message_preview'),
+    lastMessageAt: timestamp('last_message_at', { withTimezone: true }).notNull().defaultNow(),
+    messages: jsonb('messages')
+      .$type<Array<{ id: string; direction: 'incoming' | 'outgoing'; sender: string; content: string; sentAt: string }>>()
+      .notNull()
+      .default([]),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex('chatwoot_convos_tenant_ext_idx').on(t.tenantId, t.externalConversationId),
+    index('chatwoot_convos_tenant_status_idx').on(t.tenantId, t.status)
+  ]
 )

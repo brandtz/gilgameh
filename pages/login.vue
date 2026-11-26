@@ -58,8 +58,12 @@ async function submit() {
       body: { email: email.value, password: password.value },
       credentials: 'include'
     })
-    await loadMe()
-    await navigateTo('/')
+    const me = await loadMe()
+    if (me && me.tenants.length > 1) {
+      await navigateTo('/select-business')
+    } else {
+      await navigateTo('/')
+    }
   } catch (err: any) {
     error.value = err?.data?.error?.message || 'Login failed'
   } finally {

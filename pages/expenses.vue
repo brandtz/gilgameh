@@ -1,6 +1,6 @@
 <template>
   <div class="space-y-6">
-    <div class="flex items-center justify-between">
+    <div class="flex flex-wrap items-center justify-between gap-4">
       <div>
         <h1 class="text-2xl font-bold">Expenses &amp; Receipts</h1>
         <p class="text-sm text-slate-500">Draft-then-confirm expenses with duplicate fingerprint detection and receipt attachments</p>
@@ -19,8 +19,8 @@
       <button type="submit" class="bg-amber-600 text-white rounded-lg px-4 py-2 text-sm font-medium">Create Draft Expense</button>
     </form>
 
-    <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
-      <table class="w-full text-sm">
+    <div class="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+      <table class="w-full min-w-[640px] text-sm">
         <thead class="bg-slate-50 text-left text-xs uppercase text-slate-500 border-b">
           <tr>
             <th class="px-4 py-3">Date</th>

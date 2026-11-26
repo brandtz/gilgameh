@@ -48,7 +48,7 @@
         <NuxtLink to="/audit" class="text-xs text-amber-700 font-medium hover:underline">View full log →</NuxtLink>
       </div>
       <div class="divide-y divide-slate-100">
-        <div v-for="log in recentAudit" :key="log.id" class="px-5 py-3 flex items-center justify-between text-sm">
+        <div v-for="log in recentAudit" :key="log.id" class="px-4 sm:px-5 py-3 flex flex-wrap items-center justify-between gap-2 text-sm">
           <div>
             <span class="font-medium text-slate-800">{{ log.action }}</span>
             <span class="text-slate-400 mx-1.5">·</span>

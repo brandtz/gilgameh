@@ -5,9 +5,9 @@
       <p class="text-sm text-slate-500">Tracked stock levels and draft-then-confirm inventory adjustments</p>
     </div>
 
-    <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+    <div class="bg-white rounded-xl border border-slate-200 overflow-x-auto">
       <div class="px-5 py-4 border-b font-semibold">Stock On Hand</div>
-      <table class="w-full text-sm">
+      <table class="w-full min-w-[640px] text-sm">
         <thead class="bg-slate-50 text-left text-xs uppercase text-slate-500 border-b">
           <tr>
             <th class="px-4 py-3">Item</th>
@@ -49,9 +49,9 @@
       <button type="submit" class="bg-amber-600 text-white rounded-lg px-4 py-2 text-sm font-medium">Create Draft</button>
     </form>
 
-    <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+    <div class="bg-white rounded-xl border border-slate-200 overflow-x-auto">
       <div class="px-5 py-4 border-b font-semibold">Append-Only Stock Movements</div>
-      <table class="w-full text-sm">
+      <table class="w-full min-w-[600px] text-sm">
         <thead class="bg-slate-50 text-left text-xs uppercase text-slate-500 border-b">
           <tr>
             <th class="px-4 py-3">Type</th>

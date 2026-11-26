@@ -28,8 +28,8 @@
       <button type="submit" class="bg-amber-600 hover:bg-amber-700 text-white py-2 rounded-lg text-sm font-medium">Save Item</button>
     </form>
 
-    <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
-      <table class="w-full text-sm">
+    <div class="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+      <table class="w-full min-w-[680px] text-sm">
         <thead class="bg-slate-50 text-left text-xs uppercase text-slate-500 border-b">
           <tr>
             <th class="px-4 py-3">Item</th>

@@ -7,6 +7,18 @@ import { recordAudit } from './audit.service'
 import { sendEmail } from './email.service'
 import { getAttachmentWithBytes } from './attachment.service'
 import { generateBrandedDocumentPdf } from './pdf.service'
+import { buildShareablePdfUrl } from '../utils/pdf-share-token'
+
+/**
+ * Returns true if an email address uses a non-routable local/test TLD
+ * (such as `.local`, `.localhost`, `.internal`, `.example`) that causes
+ * Microsoft 365 / Gmail spam filters to quarantine or drop the email.
+ */
+export function isNonRoutableEmail(email: string): boolean {
+  const domain = email.split('@')[1]?.trim().toLowerCase() || ''
+  if (!domain || !domain.includes('.')) return true
+  return /\.(local|localhost|internal|example|invalid|test)$/.test(domain)
+}
 
 export interface EmailCopyStatus {
   status: 'sent' | 'failed' | 'skipped'
@@ -29,6 +41,7 @@ export interface DocumentEmailRenderInput {
   paymentInstructions?: string | null
   notes?: string | null
   appUrl: string
+  shareablePdfUrl?: string | null
   currency: string
   taxLabel: string
   lines: Array<{
@@ -203,7 +216,14 @@ export function renderDocumentCopyEmail(input: DocumentEmailRenderInput): {
               ${notesHtml}
 
               <div style="margin-top:22px;text-align:center;">
-                <a href="${escapeHtml(input.appUrl)}" style="display:inline-block;background-color:${accentColor};color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:11px 22px;border-radius:6px;">
+                ${
+                  input.shareablePdfUrl
+                    ? `<a href="${escapeHtml(input.shareablePdfUrl)}" style="display:inline-block;background-color:${primaryColor};color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:11px 20px;border-radius:6px;margin:4px;">
+                         Download / Share PDF
+                       </a>`
+                    : ''
+                }
+                <a href="${escapeHtml(input.appUrl)}" style="display:inline-block;background-color:${accentColor};color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:11px 20px;border-radius:6px;margin:4px;">
                   View ${escapeHtml(input.docType)} in Back Office
                 </a>
               </div>
@@ -236,6 +256,7 @@ export function renderDocumentCopyEmail(input: DocumentEmailRenderInput): {
     `Total: ${totalFormatted}`,
     ...(input.paymentInstructions ? ['', `Payment Instructions: ${input.paymentInstructions}`] : []),
     ...(input.notes ? ['', `Notes: ${input.notes}`] : []),
+    ...(input.shareablePdfUrl ? ['', `Download / Share PDF: ${input.shareablePdfUrl}`] : []),
     '',
     `View in Back Office: ${input.appUrl}`,
     '(PDF attached. Sent to your account only — not sent to the customer.)'
@@ -403,9 +424,10 @@ export async function sendQuoteEmailCopy(
     }
   }
 
-  // 8. Resolve Reply-To (configured reply-to -> tenant owner email -> tenant email)
+  // 8. Resolve Reply-To (configured reply-to -> tenant owner email -> tenant email -> senderAddress)
+  // Never emit a non-routable `.local` Reply-To header, which triggers Microsoft 365 / Gmail quarantine!
   let replyTo = tenant.settings?.quoteEmailReplyTo?.trim() || ''
-  if (!replyTo) {
+  if (!replyTo || isNonRoutableEmail(replyTo)) {
     const [ownerRow] = await db
       .select({ email: schema.users.email })
       .from(schema.tenantMemberships)
@@ -420,7 +442,8 @@ export async function sendQuoteEmailCopy(
       )
       .orderBy(desc(schema.tenantMemberships.createdAt))
       .limit(1)
-    replyTo = ownerRow?.email || tenant.email || ''
+    const candidate = ownerRow?.email || tenant.email || ''
+    replyTo = candidate && !isNonRoutableEmail(candidate) ? candidate : senderAddress
   }
 
   // 9. Fetch stored branded PDF (or regenerate if missing or tenant branding updated more recently)
@@ -481,11 +504,16 @@ export async function sendQuoteEmailCopy(
     pdfBytes = Buffer.from(generated)
   }
 
-  // 10. Render HTML + plain-text email
+  // 10. Render HTML + plain-text email (with signed mobile-friendly shareable PDF link)
   const baseUrl = (process.env.APP_BASE_URL || 'http://localhost:3000').replace(/\/+$/, '')
   const fromName = sanitizeHeaderValue(tenant.settings?.quoteEmailFromName || tenant.name)
   const fromHeader = `${fromName} <${senderAddress}>`
   const attachmentFilename = `${quote.quoteNumber}_${slugifyFilenamePart(customer.name)}.pdf`
+  const shareablePdfUrl = await buildShareablePdfUrl(baseUrl, {
+    tenantId: ctx.tenantId,
+    docType: 'quote',
+    docId: quote.id
+  })
 
   const rendered = renderDocumentCopyEmail({
     docType: 'Quote',
@@ -502,6 +530,7 @@ export async function sendQuoteEmailCopy(
     paymentInstructions: tenant.branding?.paymentInstructions || null,
     notes: quote.notes,
     appUrl: `${baseUrl}/quotes?id=${quote.id}`,
+    shareablePdfUrl,
     currency: tenant.settings.currency || 'USD',
     taxLabel: tenant.taxSettings.taxLabel || 'Tax',
     lines: lines.map((l) => ({

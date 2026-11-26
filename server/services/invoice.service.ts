@@ -7,6 +7,7 @@ import { recordAudit } from './audit.service'
 import { allocateDocumentNumber, getCurrentTenant } from './tenant.service'
 import { getCustomerById } from './customer.service'
 import { getOrderById } from './order.service'
+import { getQuoteById } from './quote.service'
 import { generateBrandedDocumentPdf } from './pdf.service'
 import { storeAttachment } from './attachment.service'
 
@@ -218,6 +219,28 @@ export async function createInvoiceFromOrder(ctx: ActorContext, orderId: string)
     quoteId: order.quoteId,
     notes: order.notes,
     lines: order.lines.map((l) => ({
+      catalogItemId: l.catalogItemId,
+      description: l.description,
+      quantity: Number(l.quantity),
+      unit: l.unit,
+      unitPriceCents: l.unitPriceCents,
+      taxable: l.taxable,
+      taxRateBps: l.taxRateBps
+    }))
+  })
+}
+
+export async function createInvoiceFromQuote(ctx: ActorContext, quoteId: string) {
+  const quote = await getQuoteById(ctx, quoteId)
+  if (quote.status === 'draft') {
+    throw Errors.validation('Approve the quote before creating an invoice from it.')
+  }
+  return createDraftInvoice(ctx, {
+    customerId: quote.customerId,
+    quoteId: quote.id,
+    notes: quote.notes,
+    taxRateBps: quote.taxRateBps,
+    lines: quote.lines.map((l) => ({
       catalogItemId: l.catalogItemId,
       description: l.description,
       quantity: Number(l.quantity),

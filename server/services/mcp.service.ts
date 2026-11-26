@@ -3,27 +3,53 @@ import { z } from 'zod'
 import type { ActorContext } from '../utils/auth-context'
 import { hasAllScopes, type Scope } from '../utils/scopes'
 import { buildInsufficientScopeMessage } from '../utils/mcp-scopes'
+import { buildShareablePdfUrl } from '../utils/pdf-share-token'
 import { formatCents } from '../utils/money'
 import { Errors } from '../utils/errors'
 import { sendQuoteEmailCopy, type EmailCopyStatus } from './document-email.service'
+import { storeAttachment } from './attachment.service'
 import {
   createCustomer,
   findCustomerCandidates,
-  logInteraction
+  listCustomers,
+  listInteractions,
+  logInteraction,
+  updateCustomer
 } from './customer.service'
-import { createCatalogItem, listCatalogItems } from './catalog.service'
+import {
+  createCatalogItem,
+  listCatalogItems,
+  updateCatalogItem
+} from './catalog.service'
 import {
   approveAndSendQuote,
   createDraftQuote,
+  createQuoteRevision,
   getQuoteById,
   listQuotes,
   updateDraftQuote
 } from './quote.service'
+import {
+  createOrderFromQuote,
+  listOrders,
+  updateOrderStatus
+} from './order.service'
 import { listProductionQueue, updateWorkItem } from './production.service'
-import { listInvoices } from './invoice.service'
+import {
+  approveAndSendInvoice,
+  createDraftInvoice,
+  createInvoiceFromOrder,
+  createInvoiceFromQuote,
+  getInvoiceById,
+  listInvoices
+} from './invoice.service'
 import { recordPayment } from './payment.service'
 import { approveExpense, createDraftExpense } from './expense.service'
-import { approveStockMovement, createDraftStockAdjustment } from './inventory.service'
+import {
+  approveStockMovement,
+  createDraftStockAdjustment,
+  listInventory
+} from './inventory.service'
 import { getBusinessSummary } from './integration.service'
 
 // Strict schema with additionalProperties: false — rejects any `to`, `cc`, `bcc` or unknown field.
@@ -101,14 +127,17 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
           uri: 'backoffice://getting-started',
           mimeType: 'text/markdown',
           text: [
-            '# Back Office Agent Guide',
+            '# Back Office Voice Agent Guide',
             '',
-            '1. **Never guess ambiguous customers**: Always call `find_customer` first. If `ambiguous: true`, read the candidates back to the owner and ask which one they mean.',
-            '2. **Search catalog before creating items**: Call `search_catalog`. If an item is not found, call `create_catalog_item` (it will be flagged `verified: false` for operator review).',
-            '3. **Draft then confirm**: Always draft quotes, expenses, and inventory adjustments first, read back the server-computed totals and document number, and only call `approve_*` with the exact `version` after the owner explicitly confirms.',
-            '4. **Money is integer cents**: Provide `unitPriceCents` in integer cents (e.g. $12.50 = 1250). Never invent totals; the server computes all math.',
-            '5. **Receipts required for expenses**: `create_draft_expense` requires a `receiptAttachmentId`.',
-            '6. **Prompt safety**: Raw inbound customer messages are withheld from tool responses.'
+            'You are the voice/chat translation layer between the business owner and their Back Office platform.',
+            '',
+            '1. **Validate before executing mutations**: Always read back names, quantities, prices, and descriptions and get the owner\'s verbal confirmation before creating/updating quotes, invoices, orders, catalog items, or inventory adjustments.',
+            '2. **Never guess ambiguous customers**: Always call `find_customer` first. If `ambiguous: true`, read candidates back and ask which one.',
+            '3. **Direct shareable PDF links**: `create_draft_quote`, `get_quote`, `approve_quote`, `create_draft_invoice`, `get_invoice`, and `approve_invoice` all return a signed `shareablePdfUrl`. Always give the owner that direct link so they can view, download, or text/share the PDF straight from their phone without logging into Back Office.',
+            '4. **Photos of products/wood slabs or receipts**: When the owner shares an image (e.g. a wood slab photo with name, description, price, and stock level, or an expense receipt), call `upload_attachment` first, then pass the returned `attachmentId` into `create_catalog_item` / `update_catalog_item` (via `attributes.photoAttachmentId`) or `create_draft_expense` (`receiptAttachmentId`).',
+            '5. **Draft then confirm**: Always draft quotes, invoices, expenses, and inventory adjustments first, read back the document number and server-computed total, and call `approve_*` with the exact `version` only after explicit confirmation.',
+            '6. **Money is integer cents**: Provide prices in integer cents (e.g. $40.00 = 4000). Never invent totals; the server computes all math.',
+            '7. **Prompt safety**: Raw inbound customer messages are withheld from tool responses.'
           ].join('\n')
         }
       ]
@@ -182,6 +211,105 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
   )
 
   server.tool(
+    'update_customer',
+    'Update an existing customer record (name, company, email, phone, status, notes, or waitingOnOwner flag). Confirm changes with the owner first.',
+    {
+      customerId: z.string().uuid(),
+      version: z.number().int().min(1).optional(),
+      name: z.string().min(1).optional(),
+      companyName: z.string().nullable().optional(),
+      email: z.string().email().nullable().optional(),
+      phone: z.string().nullable().optional(),
+      status: z.enum(['lead', 'active', 'inactive']).optional(),
+      waitingOnOwner: z.boolean().optional(),
+      notes: z.string().nullable().optional()
+    },
+    async ({ customerId, ...patch }) => {
+      try {
+        assertScope(ctx, ['customers:write'])
+        const updated = await updateCustomer(ctx, customerId, patch)
+        return okResult(`Updated customer "${updated.name}" (v${updated.version}).`, updated)
+      } catch (err) {
+        return errResult(err)
+      }
+    }
+  )
+
+  server.tool(
+    'list_customers_waiting',
+    'List all customers currently flagged as waiting on the owner for a follow-up.',
+    { limit: z.number().int().min(1).max(50).default(25) },
+    async ({ limit }) => {
+      try {
+        assertScope(ctx, ['customers:read'])
+        const res = await listCustomers(ctx, { waitingOnOwner: true, limit, offset: 0 })
+        return okResult(
+          res.total === 0
+            ? 'No customers are currently waiting on you.'
+            : `${res.total} customer(s) are waiting on you: ${res.items.map((c) => c.name).join(', ')}.`,
+          res.items
+        )
+      } catch (err) {
+        return errResult(err)
+      }
+    }
+  )
+
+  server.tool(
+    'list_interactions',
+    'Read summarized touchpoint history for a customer (raw inbound customer messages are withheld for prompt safety).',
+    {
+      customerId: z.string().uuid(),
+      limit: z.number().int().min(1).max(50).default(20)
+    },
+    async ({ customerId, limit }) => {
+      try {
+        assertScope(ctx, ['customers:read'])
+        const res = await listInteractions(ctx, {
+          customerId,
+          limit,
+          offset: 0,
+          redactExternalRaw: true
+        })
+        return okResult(`Found ${res.total} logged interaction(s).`, res.items)
+      } catch (err) {
+        return errResult(err)
+      }
+    }
+  )
+
+  server.tool(
+    'upload_attachment',
+    'Upload a base64-encoded image or file (e.g. a wood slab photo, product photo, or expense receipt) and return an attachmentId to attach to catalog items, expenses, quotes, or orders.',
+    {
+      entityType: z.enum(['quote', 'invoice', 'expense', 'customer', 'order', 'general']).default('general'),
+      entityId: z.string().uuid().optional(),
+      filename: z.string().min(1).max(200),
+      mimeType: z.string().min(1).max(120),
+      contentBase64: z.string().min(1)
+    },
+    async (args) => {
+      try {
+        assertScope(ctx, ['catalog:write'])
+        const data = Buffer.from(args.contentBase64, 'base64')
+        const saved = await storeAttachment(ctx, {
+          entityType: args.entityType,
+          entityId: args.entityId ?? null,
+          filename: args.filename,
+          mimeType: args.mimeType,
+          data
+        })
+        return okResult(
+          `Uploaded "${saved.filename}" (${saved.sizeBytes} bytes). Attachment ID: ${saved.id}.`,
+          saved
+        )
+      } catch (err) {
+        return errResult(err)
+      }
+    }
+  )
+
+  server.tool(
     'search_catalog',
     'Search tenant catalog products and services by name, SKU, or description.',
     {
@@ -201,7 +329,7 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
 
   server.tool(
     'create_catalog_item',
-    'Create a new catalog product or service. Agent-created items are automatically marked verified=false for operator review.',
+    'Create a new catalog product or service with optional inventory tracking, initial stock quantity, custom attributes (dimensions, species, finish), and photo attachmentId. Agent-created items are marked verified=false for operator review.',
     {
       name: z.string().min(1),
       type: z.enum(['product', 'service']).default('product'),
@@ -209,14 +337,27 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
       description: z.string().optional(),
       unit: z.string().default('each'),
       basePriceCents: z.number().int().min(0),
+      taxable: z.boolean().optional(),
+      trackInventory: z.boolean().optional(),
+      initialQuantityOnHand: z.number().int().min(0).optional(),
+      reorderPoint: z.number().int().min(0).optional(),
+      photoAttachmentId: z.string().uuid().optional(),
       attributes: z.record(z.unknown()).optional()
     },
-    async (args) => {
+    async ({ photoAttachmentId, attributes, ...rest }) => {
       try {
         assertScope(ctx, ['catalog:write'])
-        const item = await createCatalogItem(ctx, args)
+        const mergedAttrs = {
+          ...(attributes || {}),
+          ...(photoAttachmentId ? { photoAttachmentId } : {})
+        }
+        const item = await createCatalogItem(ctx, {
+          ...rest,
+          trackInventory: rest.trackInventory ?? (rest.initialQuantityOnHand !== undefined),
+          attributes: mergedAttrs
+        })
         return okResult(
-          `Created unverified catalog item "${item.name}" at ${formatCents(item.basePriceCents)}/${item.unit} (verified: ${item.verified}).`,
+          `Created catalog item "${item.name}" at ${formatCents(item.basePriceCents)}/${item.unit}${rest.initialQuantityOnHand !== undefined ? ` (initial stock: ${rest.initialQuantityOnHand})` : ''}${photoAttachmentId ? ' with photo attached' : ''} (verified: ${item.verified}).`,
           item
         )
       } catch (err) {
@@ -226,8 +367,49 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
   )
 
   server.tool(
+    'update_catalog_item',
+    'Update an existing catalog product or service (name, description, price, unit, SKU, custom attributes, photo attachmentId, or active flag). Confirm changes with the owner first.',
+    {
+      catalogItemId: z.string().uuid(),
+      version: z.number().int().min(1).optional(),
+      name: z.string().min(1).optional(),
+      sku: z.string().nullable().optional(),
+      description: z.string().nullable().optional(),
+      unit: z.string().min(1).optional(),
+      basePriceCents: z.number().int().min(0).optional(),
+      taxable: z.boolean().optional(),
+      trackInventory: z.boolean().optional(),
+      isActive: z.boolean().optional(),
+      photoAttachmentId: z.string().uuid().optional(),
+      attributes: z.record(z.unknown()).optional()
+    },
+    async ({ catalogItemId, photoAttachmentId, attributes, ...rest }) => {
+      try {
+        assertScope(ctx, ['catalog:write'])
+        const mergedAttrs =
+          attributes || photoAttachmentId
+            ? {
+                ...(attributes || {}),
+                ...(photoAttachmentId ? { photoAttachmentId } : {})
+              }
+            : undefined
+        const updated = await updateCatalogItem(ctx, catalogItemId, {
+          ...rest,
+          ...(mergedAttrs ? { attributes: mergedAttrs } : {})
+        })
+        return okResult(
+          `Updated catalog item "${updated.name}" to ${formatCents(updated.basePriceCents)}/${updated.unit} (v${updated.version}).`,
+          updated
+        )
+      } catch (err) {
+        return errResult(err)
+      }
+    }
+  )
+
+  server.tool(
     'create_draft_quote',
-    'Create a numbered draft quote with server-computed line totals, tax, and grand total. Read back the Q-number and total before approving.',
+    'Create a numbered draft quote with server-computed line totals, tax, and grand total. Returns a direct shareablePdfUrl the owner can open/share without logging in. Read back the Q-number and total before approving.',
     {
       customerId: z.string().uuid(),
       customerPoNumber: z.string().optional(),
@@ -250,9 +432,14 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
       try {
         assertScope(ctx, ['quotes:draft'])
         const quote = await createDraftQuote(ctx, args)
+        const shareablePdfUrl = await buildShareablePdfUrl(baseUrl, {
+          tenantId: ctx.tenantId,
+          docType: 'quote',
+          docId: quote.id
+        })
         return okResult(
-          `Drafted quote ${quote.quoteNumber} (v${quote.version}) for ${quote.customer.name}. Total: ${formatCents(quote.totalCents)}. PDF preview: ${baseUrl}${quote.pdfUrl}`,
-          { ...quote, pdfFullUrl: `${baseUrl}${quote.pdfUrl}` }
+          `Drafted quote ${quote.quoteNumber} (v${quote.version}) for ${quote.customer.name}. Total: ${formatCents(quote.totalCents)}. Direct PDF (no login required): ${shareablePdfUrl}`,
+          { ...quote, pdfFullUrl: `${baseUrl}${quote.pdfUrl}`, shareablePdfUrl }
         )
       } catch (err) {
         return errResult(err)
@@ -287,9 +474,14 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
       try {
         assertScope(ctx, ['quotes:draft'])
         const updated = await updateDraftQuote(ctx, quoteId, patch)
+        const shareablePdfUrl = await buildShareablePdfUrl(baseUrl, {
+          tenantId: ctx.tenantId,
+          docType: 'quote',
+          docId: updated.id
+        })
         return okResult(
-          `Updated draft quote ${updated.quoteNumber} to v${updated.version}. New total: ${formatCents(updated.totalCents)}.`,
-          updated
+          `Updated draft quote ${updated.quoteNumber} to v${updated.version}. New total: ${formatCents(updated.totalCents)}. Direct PDF: ${shareablePdfUrl}`,
+          { ...updated, shareablePdfUrl }
         )
       } catch (err) {
         return errResult(err)
@@ -299,15 +491,43 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
 
   server.tool(
     'get_quote',
-    'Fetch quote details, line items, version, server-computed totals, and branded PDF link.',
+    'Fetch quote details, line items, version, server-computed totals, and a direct shareablePdfUrl that works on mobile or in chat without logging in.',
     { quoteId: z.string().uuid() },
     async ({ quoteId }) => {
       try {
         assertScope(ctx, ['quotes:read'])
         const quote = await getQuoteById(ctx, quoteId)
+        const shareablePdfUrl = await buildShareablePdfUrl(baseUrl, {
+          tenantId: ctx.tenantId,
+          docType: 'quote',
+          docId: quote.id
+        })
         return okResult(
-          `Quote ${quote.quoteNumber} (${quote.status}, v${quote.version}) for ${quote.customer.name}: ${formatCents(quote.totalCents)}. PDF: ${baseUrl}${quote.pdfUrl}`,
-          { ...quote, pdfFullUrl: `${baseUrl}${quote.pdfUrl}` }
+          `Quote ${quote.quoteNumber} (${quote.status}, v${quote.version}) for ${quote.customer.name}: ${formatCents(quote.totalCents)}. Direct PDF (no login required): ${shareablePdfUrl}`,
+          { ...quote, pdfFullUrl: `${baseUrl}${quote.pdfUrl}`, shareablePdfUrl }
+        )
+      } catch (err) {
+        return errResult(err)
+      }
+    }
+  )
+
+  server.tool(
+    'revise_quote',
+    'Create the next editable draft revision (e.g. Q-1001-R2) from an existing sent or draft quote.',
+    { quoteId: z.string().uuid() },
+    async ({ quoteId }) => {
+      try {
+        assertScope(ctx, ['quotes:draft'])
+        const revised = await createQuoteRevision(ctx, quoteId)
+        const shareablePdfUrl = await buildShareablePdfUrl(baseUrl, {
+          tenantId: ctx.tenantId,
+          docType: 'quote',
+          docId: revised.id
+        })
+        return okResult(
+          `Created revision ${revised.quoteNumber} (v${revised.version}, draft) for ${revised.customer.name}. Total: ${formatCents(revised.totalCents)}. Direct PDF: ${shareablePdfUrl}`,
+          { ...revised, shareablePdfUrl }
         )
       } catch (err) {
         return errResult(err)
@@ -317,7 +537,7 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
 
   server.tool(
     'approve_quote',
-    'Approve and finalize a draft quote (generates branded PDF). Requires exact draft version. Blocked if tenant has not opted into agent approvals. On success, emails a PDF copy to the signed-in user only.',
+    'Approve and finalize a draft quote (generates branded PDF). Requires exact draft version. Blocked if tenant has not opted into agent approvals. On success, emails a PDF copy to the signed-in user only and returns a direct shareablePdfUrl.',
     {
       quoteId: z.string().uuid(),
       version: z.number().int().min(1)
@@ -326,10 +546,15 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
       try {
         assertScope(ctx, ['quotes:approve'])
         const approved = await approveAndSendQuote(ctx, quoteId, version)
+        const shareablePdfUrl = await buildShareablePdfUrl(baseUrl, {
+          tenantId: ctx.tenantId,
+          docType: 'quote',
+          docId: approved.id
+        })
         const emailSentence = formatEmailCopySentence(approved.quoteNumber, approved.emailCopy)
         return okResult(
-          `Approved quote ${approved.quoteNumber} (status: ${approved.status}, v${approved.version}). ${emailSentence} PDF ready at ${baseUrl}${approved.pdfUrl}`,
-          { ...approved, pdfFullUrl: `${baseUrl}${approved.pdfUrl}` }
+          `Approved quote ${approved.quoteNumber} (status: ${approved.status}, v${approved.version}). ${emailSentence} Direct PDF (no login required): ${shareablePdfUrl}`,
+          { ...approved, pdfFullUrl: `${baseUrl}${approved.pdfUrl}`, shareablePdfUrl }
         )
       } catch (err) {
         return errResult(err)
@@ -378,6 +603,62 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
   // ── Full-Platform Operational Tools ─────────────────────────────────────────
 
   server.tool(
+    'create_order_from_quote',
+    'Convert a sent or accepted quote into an Order (automatically queues production WorkItems and deducts tracked inventory).',
+    { quoteId: z.string().uuid() },
+    async ({ quoteId }) => {
+      try {
+        assertScope(ctx, ['orders:write'])
+        const order = await createOrderFromQuote(ctx, quoteId)
+        return okResult(
+          `Created order ${order.orderNumber} for ${order.customer.name} (${formatCents(order.totalCents)}) with ${order.workItems.length} production item(s) queued.`,
+          order
+        )
+      } catch (err) {
+        return errResult(err)
+      }
+    }
+  )
+
+  server.tool(
+    'list_orders',
+    'List recent or filtered orders for the active business.',
+    {
+      status: z.enum(['pending', 'confirmed', 'in_production', 'ready', 'fulfilled', 'cancelled']).optional(),
+      limit: z.number().int().min(1).max(50).default(20)
+    },
+    async ({ status, limit }) => {
+      try {
+        assertScope(ctx, ['orders:read'])
+        const res = await listOrders(ctx, { status, limit, offset: 0 })
+        return okResult(`Found ${res.total} order(s).`, res.items)
+      } catch (err) {
+        return errResult(err)
+      }
+    }
+  )
+
+  server.tool(
+    'update_order_status',
+    'Update an order status (requires current version). Fires outbound website status webhooks.',
+    {
+      orderId: z.string().uuid(),
+      version: z.number().int().min(1),
+      status: z.enum(['pending', 'confirmed', 'in_production', 'ready', 'fulfilled', 'cancelled']),
+      notes: z.string().optional()
+    },
+    async ({ orderId, ...patch }) => {
+      try {
+        assertScope(ctx, ['orders:write'])
+        const updated = await updateOrderStatus(ctx, orderId, patch)
+        return okResult(`Order ${updated.orderNumber} marked "${updated.status}" (v${updated.version}).`, updated)
+      } catch (err) {
+        return errResult(err)
+      }
+    }
+  )
+
+  server.tool(
     'list_production_queue',
     'List active production work items sorted by priority rank and due date.',
     {
@@ -417,6 +698,110 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
   )
 
   server.tool(
+    'create_draft_invoice',
+    'Create a numbered draft invoice either from an existing quoteId, from an orderId, or standalone with customerId + lines. Returns a direct shareablePdfUrl.',
+    {
+      fromQuoteId: z.string().uuid().optional(),
+      fromOrderId: z.string().uuid().optional(),
+      customerId: z.string().uuid().optional(),
+      notes: z.string().optional(),
+      lines: z
+        .array(
+          z.object({
+            catalogItemId: z.string().uuid().optional(),
+            description: z.string().min(1),
+            quantity: z.number().positive(),
+            unit: z.string().default('each'),
+            unitPriceCents: z.number().int().min(0),
+            taxable: z.boolean().optional()
+          })
+        )
+        .min(1)
+        .optional()
+    },
+    async (args) => {
+      try {
+        assertScope(ctx, ['invoices:draft'])
+        let inv
+        if (args.fromQuoteId) {
+          inv = await createInvoiceFromQuote(ctx, args.fromQuoteId)
+        } else if (args.fromOrderId) {
+          inv = await createInvoiceFromOrder(ctx, args.fromOrderId)
+        } else {
+          if (!args.customerId || !args.lines || args.lines.length === 0) {
+            throw Errors.badRequest('Provide fromQuoteId, fromOrderId, or customerId with lines')
+          }
+          inv = await createDraftInvoice(ctx, {
+            customerId: args.customerId,
+            notes: args.notes,
+            lines: args.lines
+          })
+        }
+        const shareablePdfUrl = await buildShareablePdfUrl(baseUrl, {
+          tenantId: ctx.tenantId,
+          docType: 'invoice',
+          docId: inv.id
+        })
+        return okResult(
+          `Drafted invoice ${inv.invoiceNumber} (v${inv.version}) for ${inv.customer.name}. Total: ${formatCents(inv.totalCents)}. Direct PDF (no login required): ${shareablePdfUrl}`,
+          { ...inv, pdfFullUrl: `${baseUrl}${inv.pdfUrl}`, shareablePdfUrl }
+        )
+      } catch (err) {
+        return errResult(err)
+      }
+    }
+  )
+
+  server.tool(
+    'get_invoice',
+    'Fetch invoice details, lines, payments, balance due, and a direct shareablePdfUrl downloadable without login.',
+    { invoiceId: z.string().uuid() },
+    async ({ invoiceId }) => {
+      try {
+        assertScope(ctx, ['invoices:read'])
+        const inv = await getInvoiceById(ctx, invoiceId)
+        const shareablePdfUrl = await buildShareablePdfUrl(baseUrl, {
+          tenantId: ctx.tenantId,
+          docType: 'invoice',
+          docId: inv.id
+        })
+        return okResult(
+          `Invoice ${inv.invoiceNumber} (${inv.status}, v${inv.version}) for ${inv.customer.name}: Total ${formatCents(inv.totalCents)}, Balance Due ${formatCents(inv.balanceDueCents)}. Direct PDF (no login required): ${shareablePdfUrl}`,
+          { ...inv, pdfFullUrl: `${baseUrl}${inv.pdfUrl}`, shareablePdfUrl }
+        )
+      } catch (err) {
+        return errResult(err)
+      }
+    }
+  )
+
+  server.tool(
+    'approve_invoice',
+    'Approve and finalize a draft invoice (generates branded PDF). Requires exact draft version and tenant agent-approval opt-in. Returns direct shareablePdfUrl.',
+    {
+      invoiceId: z.string().uuid(),
+      version: z.number().int().min(1)
+    },
+    async ({ invoiceId, version }) => {
+      try {
+        assertScope(ctx, ['invoices:approve'])
+        const approved = await approveAndSendInvoice(ctx, invoiceId, version)
+        const shareablePdfUrl = await buildShareablePdfUrl(baseUrl, {
+          tenantId: ctx.tenantId,
+          docType: 'invoice',
+          docId: approved.id
+        })
+        return okResult(
+          `Approved invoice ${approved.invoiceNumber} (status: ${approved.status}, v${approved.version}). Balance due: ${formatCents(approved.balanceDueCents)}. Direct PDF (no login required): ${shareablePdfUrl}`,
+          { ...approved, pdfFullUrl: `${baseUrl}${approved.pdfUrl}`, shareablePdfUrl }
+        )
+      } catch (err) {
+        return errResult(err)
+      }
+    }
+  )
+
+  server.tool(
     'list_unpaid_invoices',
     'List sent, partially paid, or overdue invoices with remaining balances.',
     { limit: z.number().int().min(1).max(50).default(25) },
@@ -425,6 +810,25 @@ export function createMcpServerForActor(ctx: ActorContext): McpServer {
         assertScope(ctx, ['invoices:read'])
         const res = await listInvoices(ctx, { unpaidOnly: true, limit, offset: 0 })
         return okResult(`Found ${res.total} unpaid invoice(s).`, res.items)
+      } catch (err) {
+        return errResult(err)
+      }
+    }
+  )
+
+  server.tool(
+    'list_inventory',
+    'List tracked inventory stock levels and optionally filter to low-stock items only.',
+    { lowStockOnly: z.boolean().default(false) },
+    async ({ lowStockOnly }) => {
+      try {
+        assertScope(ctx, ['inventory:read'])
+        const all = await listInventory(ctx)
+        const items = lowStockOnly ? all.filter((i) => i.lowStock) : all
+        return okResult(
+          `Found ${items.length} ${lowStockOnly ? 'low-stock ' : ''}inventory item(s).`,
+          items
+        )
       } catch (err) {
         return errResult(err)
       }

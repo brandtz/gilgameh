@@ -141,8 +141,8 @@
     </div>
 
     <!-- Quotes Table -->
-    <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
-      <table class="w-full text-sm">
+    <div class="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+      <table class="w-full min-w-[640px] text-sm">
         <thead class="bg-slate-50 text-left text-xs uppercase text-slate-500 border-b">
           <tr>
             <th class="px-4 py-3">Quote #</th>

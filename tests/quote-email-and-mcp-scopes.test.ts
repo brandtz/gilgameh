@@ -9,7 +9,9 @@ import { loginWithPassword } from '../server/services/auth.service'
 import { createTenant, updateTenant } from '../server/services/tenant.service'
 import { createCustomer } from '../server/services/customer.service'
 import { approveAndSendQuote, createDraftQuote, renderQuotePdfBytes } from '../server/services/quote.service'
-import { sendQuoteEmailCopy } from '../server/services/document-email.service'
+import { sendQuoteEmailCopy, isNonRoutableEmail } from '../server/services/document-email.service'
+import { createInvoiceFromQuote } from '../server/services/invoice.service'
+import { buildShareablePdfUrl, verifyDocumentPdfToken } from '../server/utils/pdf-share-token'
 import { setEmailTransportForTests, type EmailSendRequest } from '../server/services/email.service'
 import { listAuditLogs } from '../server/services/audit.service'
 import { emailQuoteCopyInputSchema } from '../server/services/mcp.service'
@@ -140,7 +142,9 @@ describe('NN — Quote Email Copy, Saved Logo Piping & MCP OAuth Scope Fixes', (
     // Recipient is strictly the signed-in user (never the customer, never prompt-injected address)
     expect(mail.to).toEqual(['drew@studio37.local'])
     expect(mail.from).toBe('Studio 37 <quotes@studio37customdesigns.com>')
-    expect(mail.replyTo).toBe('drew@studio37.local')
+    // Non-routable `.local` Reply-To is automatically replaced with the verified sender domain
+    expect(mail.replyTo).toBe('quotes@studio37customdesigns.com')
+    expect(mail.html).toContain('/api/v1/public/pdf?token=')
     // CR/LF stripped from subject
     expect(mail.subject).not.toMatch(/[\r\n]/)
     expect(mail.subject).toContain(approved.quoteNumber)
@@ -380,5 +384,32 @@ describe('NN — Quote Email Copy, Saved Logo Piping & MCP OAuth Scope Fixes', (
     expect((denied.body as any)?.error?.message).toBe(
       'This action needs the quotes:approve permission. Reconnect the Gilgameh connector to grant it.'
     )
+  })
+
+  it('8. Deliverability guard (.local Reply-To), signed shareable PDF links, and invoice-from-quote flow', async () => {
+    expect(isNonRoutableEmail('drew@studio37.local')).toBe(true)
+    expect(isNonRoutableEmail('quotes@studio37customdesigns.com')).toBe(false)
+
+    const draftQ = await createDraftQuote(ownerCtx, {
+      customerId: seed.madeInOregonCustomerId,
+      lines: [{ description: 'Live-Edge Claro Walnut Slab', quantity: 1, unit: 'slab', unitPriceCents: 145000 }]
+    })
+    const approvedQ = await approveAndSendQuote(ownerCtx, draftQ.id, draftQ.version)
+
+    // Signed shareable PDF URL verifies cleanly and rejects tampering
+    const shareUrl = await buildShareablePdfUrl('https://gilgameh.netlify.app', {
+      tenantId: seed.tenantId,
+      docType: 'quote',
+      docId: approvedQ.id
+    })
+    const token = new URL(shareUrl).searchParams.get('token')!
+    const verified = await verifyDocumentPdfToken(token)
+    expect(verified).toEqual({ tenantId: seed.tenantId, docType: 'quote', docId: approvedQ.id })
+    await expect(verifyDocumentPdfToken(`${token}tampered`)).rejects.toMatchObject({ statusCode: 401 })
+
+    // Voice-agent "invoice out that quote" flow
+    const draftInv = await createInvoiceFromQuote(ownerCtx, approvedQ.id)
+    expect(draftInv.quoteId).toBe(approvedQ.id)
+    expect(draftInv.totalCents).toBe(145000)
   })
 })

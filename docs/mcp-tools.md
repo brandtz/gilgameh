@@ -13,7 +13,7 @@ Both protected-resource endpoints return the exact same RFC 9728 metadata docume
 ### Advertised `scopes_supported`
 
 All MCP tool scopes (including approval/adjustment scopes) are advertised:
-`customers:read`, `customers:write`, `catalog:read`, `catalog:write`, `quotes:read`, `quotes:draft`, `quotes:approve`, `production:read`, `production:write`, `invoices:read`, `invoices:draft`, `invoices:approve`, `expenses:read`, `expenses:draft`, `expenses:approve`, `inventory:adjust`.
+`customers:read`, `customers:write`, `catalog:read`, `catalog:write`, `quotes:read`, `quotes:draft`, `quotes:approve`, `orders:read`, `orders:write`, `production:read`, `production:write`, `invoices:read`, `invoices:draft`, `invoices:approve`, `inventory:read`, `inventory:adjust`, `expenses:read`, `expenses:draft`, `expenses:approve`.
 
 ### Excluded Admin-Only Scopes (App-Only)
 
@@ -29,28 +29,41 @@ If an MCP client calls a tool requiring a scope absent from its token, `/api/mcp
 
 ---
 
-## Tool → Scope Matrix
+## Tool → Scope Matrix (32 Tools)
 
 | Tool | Category | Required Scope(s) | Tenant Opt-In Required | Notes |
 | --- | --- | --- | --- | --- |
 | `find_customer` | Customers | `customers:read` | No | Returns candidates; flags ambiguity |
 | `create_customer` | Customers | `customers:write` | No | Creates customer or lead |
+| `update_customer` | Customers | `customers:write` | No | Updates contact info, status, notes, or `waitingOnOwner` |
+| `list_customers_waiting` | Customers | `customers:read` | No | Lists all customers waiting on owner |
 | `log_interaction` | Customers | `customers:write` | No | Logs touchpoint |
+| `list_interactions` | Customers | `customers:read` | No | Summarized history (raw external messages withheld) |
 | `search_catalog` | Catalog | `catalog:read` | No | Searches products & services |
-| `create_catalog_item` | Catalog | `catalog:write` | No | Always sets `verified=false` for agents |
-| `create_draft_quote` | Quotes | `quotes:draft` | No | Server computes integer-cent totals |
-| `update_draft_quote` | Quotes | `quotes:draft` | No | Version-pinned; draft quotes only |
-| `get_quote` | Quotes | `quotes:read` | No | Returns summary + PDF link |
-| `approve_quote` | Quotes | `quotes:approve` | **Yes** | Requires BOTH `quotes:approve` scope AND `allowAgentApproveScopes=true`. Emails PDF copy strictly to signed-in user. |
+| `create_catalog_item` | Catalog | `catalog:write` | No | Always sets `verified=false` for agents; supports stock tracking & photo `attachmentId` |
+| `update_catalog_item` | Catalog | `catalog:write` | No | Updates name, description, price, unit, attributes, photo (cannot self-verify) |
+| `upload_attachment` | Attachments | `catalog:write` | No | Uploads base64 slab/product photos or receipts for linking |
+| `create_draft_quote` | Quotes | `quotes:draft` | No | Server computes totals; returns signed `shareablePdfUrl` |
+| `update_draft_quote` | Quotes | `quotes:draft` | No | Version-pinned draft update; returns `shareablePdfUrl` |
+| `get_quote` | Quotes | `quotes:read` | No | Returns summary + direct `shareablePdfUrl` (no login required) |
+| `revise_quote` | Quotes | `quotes:draft` | No | Creates next draft revision (`Q-xxxx-R2`) + `shareablePdfUrl` |
+| `approve_quote` | Quotes | `quotes:approve` | **Yes** | Requires BOTH `quotes:approve` scope AND `allowAgentApproveScopes=true`. Returns `shareablePdfUrl` + emails PDF copy to signed-in user only. |
 | `email_quote_copy` | Quotes | `quotes:read` | No | Emails finalized quote PDF strictly to signed-in user only (`additionalProperties: false`, max 3/hr/quote/user). Future customer send needs `quotes:send`. |
 | `list_open_quotes` | Quotes | `quotes:read` | No | Lists `draft` and `sent` quotes |
+| `create_order_from_quote` | Orders | `orders:write` | No | Converts quote to Order + queues production WorkItems + deducts inventory |
+| `list_orders` | Orders | `orders:read` | No | Lists recent/filtered orders |
+| `update_order_status` | Orders | `orders:write` | No | Updates order lifecycle & fires outbound website webhook |
 | `list_production_queue` | Production | `production:read` | No | Lists shop-floor work items |
 | `update_work_item` | Production | `production:write` | No | Version-pinned state/priority update |
+| `create_draft_invoice` | Invoices & Payments | `invoices:draft` | No | Creates draft invoice from `fromQuoteId`, `fromOrderId`, or standalone lines + `shareablePdfUrl` |
+| `get_invoice` | Invoices & Payments | `invoices:read` | No | Returns invoice details, balance due, payments + `shareablePdfUrl` |
+| `approve_invoice` | Invoices & Payments | `invoices:approve` | **Yes** | Requires BOTH `invoices:approve` scope AND `allowAgentApproveScopes=true`. Returns `shareablePdfUrl`. |
 | `list_unpaid_invoices` | Invoices & Payments | `invoices:read` | No | Lists `sent`, `partially_paid`, `overdue` |
 | `record_payment` | Invoices & Payments | `invoices:draft` | No | Records payment against open invoice |
-| `create_draft_expense` | Expenses | `expenses:draft` | No | Requires `receiptAttachmentId` for agents |
-| `approve_expense` | Expenses | `expenses:approve` | **Yes** | Requires BOTH `expenses:approve` scope AND `allowAgentApproveScopes=true` |
+| `list_inventory` | Inventory | `inventory:read` | No | Lists tracked inventory levels & low-stock alerts |
 | `adjust_inventory` | Inventory | `inventory:adjust` | **Yes (approve)** | Drafting uses `inventory:adjust`; approving requires `allowAgentApproveScopes=true` |
+| `create_draft_expense` | Expenses | `expenses:draft` | No | Requires `receiptAttachmentId` (from `upload_attachment`) for agents |
+| `approve_expense` | Expenses | `expenses:approve` | **Yes** | Requires BOTH `expenses:approve` scope AND `allowAgentApproveScopes=true` |
 | `business_summary` | Summary | **⚠️ None (FLAGGED)** | No | Enforces no scope; available to any authenticated tenant token. Returns aggregate KPI counts only (no PII). |
 
 ---

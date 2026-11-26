@@ -6,9 +6,9 @@
     </div>
 
     <!-- Production Queue -->
-    <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+    <div class="bg-white rounded-xl border border-slate-200 overflow-x-auto">
       <div class="px-5 py-4 border-b border-slate-200 font-semibold">Production Queue (Work Items)</div>
-      <table class="w-full text-sm">
+      <table class="w-full min-w-[640px] text-sm">
         <thead class="bg-slate-50 text-left text-xs uppercase text-slate-500 border-b">
           <tr>
             <th class="px-4 py-3">Priority</th>
@@ -42,9 +42,9 @@
     </div>
 
     <!-- Orders -->
-    <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+    <div class="bg-white rounded-xl border border-slate-200 overflow-x-auto">
       <div class="px-5 py-4 border-b border-slate-200 font-semibold">Orders</div>
-      <table class="w-full text-sm">
+      <table class="w-full min-w-[640px] text-sm">
         <thead class="bg-slate-50 text-left text-xs uppercase text-slate-500 border-b">
           <tr>
             <th class="px-4 py-3">Order #</th>

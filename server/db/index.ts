@@ -33,6 +33,10 @@ export async function getDb(): Promise<Database> {
       return db
     }
 
+    if (process.env.NODE_ENV === 'production' && !forcePglite) {
+      throw new Error('DATABASE_URL environment variable is required in production')
+    }
+
     // Embedded PostgreSQL (PGlite): in-memory for Vitest, persisted to .data/pgdata for local dev
     const isTest = process.env.VITEST === 'true' || process.env.NODE_ENV === 'test'
     let dataDir: string | undefined

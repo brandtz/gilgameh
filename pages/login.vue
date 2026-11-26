@@ -11,6 +11,8 @@
           <input
             v-model="email"
             type="email"
+            autocomplete="email"
+            placeholder="you@company.com"
             required
             class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-amber-600 focus:outline-none"
           />
@@ -20,6 +22,7 @@
           <input
             v-model="password"
             type="password"
+            autocomplete="current-password"
             required
             class="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-amber-600 focus:outline-none"
           />
@@ -35,43 +38,16 @@
           {{ loading ? 'Signing in...' : 'Sign In' }}
         </button>
       </form>
-
-      <div class="mt-6 pt-5 border-t border-slate-200">
-        <div class="text-xs font-medium text-slate-500 mb-2">Seeded Demo Accounts (Studio 37):</div>
-        <div class="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            class="text-xs border border-slate-200 rounded-lg py-2 px-2.5 hover:bg-slate-50 text-left"
-            @click="fill('matthew@bwe.local', 'BweOperator!2026')"
-          >
-            <div class="font-semibold text-slate-800">BWE Operator</div>
-            <div class="text-slate-500 truncate">matthew@bwe.local</div>
-          </button>
-          <button
-            type="button"
-            class="text-xs border border-slate-200 rounded-lg py-2 px-2.5 hover:bg-slate-50 text-left"
-            @click="fill('drew@studio37.local', 'Studio37Owner!2026')"
-          >
-            <div class="font-semibold text-slate-800">Studio 37 Owner</div>
-            <div class="text-slate-500 truncate">drew@studio37.local</div>
-          </button>
-        </div>
-      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 const { loadMe } = useAuthState()
-const email = ref('drew@studio37.local')
-const password = ref('Studio37Owner!2026')
+const email = ref('')
+const password = ref('')
 const loading = ref(false)
 const error = ref('')
-
-function fill(e: string, p: string) {
-  email.value = e
-  password.value = p
-}
 
 async function submit() {
   loading.value = true

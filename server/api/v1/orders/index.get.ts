@@ -13,6 +13,7 @@ export default defineEventHandler(
       status: typeof query.status === 'string' ? query.status : undefined,
       customerId: typeof query.customerId === 'string' ? query.customerId : undefined,
       channel: typeof query.channel === 'string' ? query.channel : undefined,
+      externalOrderId: typeof query.externalOrderId === 'string' ? query.externalOrderId : undefined,
       limit: pagination.limit,
       offset: pagination.offset
     })

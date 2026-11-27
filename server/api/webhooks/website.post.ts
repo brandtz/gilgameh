@@ -1,9 +1,15 @@
-import { defineEventHandler, getHeader, readRawBody } from 'h3'
+import { defineEventHandler, getHeader, readRawBody, setHeader } from 'h3'
 import { z } from 'zod'
-import { defineApiHandler, Errors } from '../../utils/errors'
+import { AppError, defineApiHandler, Errors } from '../../utils/errors'
 import { verifyInboundWebhookSignature } from '../../services/webhook.service'
-import { createCustomer, findCustomerCandidates, logInteraction } from '../../services/customer.service'
-import { createOrder } from '../../services/order.service'
+import {
+  createCustomer,
+  findCustomerForInboundEvent,
+  findInteractionByExternalRef,
+  logInteraction,
+  updateCustomer
+} from '../../services/customer.service'
+import { createOrder, findOrderByExternalId } from '../../services/order.service'
 import type { ActorContext } from '../../utils/auth-context'
 import { ALL_SCOPES } from '../../utils/scopes'
 
@@ -50,10 +56,27 @@ export default defineEventHandler(
       scopes: [...ALL_SCOPES]
     }
 
-    const search = await findCustomerCandidates(ctx, payload.customer.email || payload.customer.name)
-    const customer =
-      search.exactMatch ||
-      (await createCustomer(ctx, {
+    // Website events are retried by the storefront, so replays return the original records.
+    if (payload.type === 'lead') {
+      const existing = await findInteractionByExternalRef(ctx, payload.eventId)
+      if (existing) {
+        setHeader(event, 'X-Idempotent-Replayed', 'true')
+        return { data: { customerId: existing.customerId, interactionId: existing.id } }
+      }
+    } else {
+      if (!payload.lines || payload.lines.length === 0) {
+        throw Errors.badRequest('Website order webhook requires lines')
+      }
+      const existing = await findOrderByExternalId(ctx, payload.externalOrderId || payload.eventId)
+      if (existing) {
+        setHeader(event, 'X-Idempotent-Replayed', 'true')
+        return { data: { customerId: existing.customerId, orderId: existing.id, orderNumber: existing.orderNumber } }
+      }
+    }
+
+    let customer = await findCustomerForInboundEvent(ctx, payload.customer)
+    if (!customer) {
+      customer = await createCustomer(ctx, {
         name: payload.customer.name,
         email: payload.customer.email,
         phone: payload.customer.phone,
@@ -63,7 +86,10 @@ export default defineEventHandler(
         utmMedium: payload.customer.utmMedium,
         utmCampaign: payload.customer.utmCampaign,
         waitingOnOwner: payload.type === 'lead'
-      }))
+      })
+    } else if (payload.type === 'lead' && !customer.waitingOnOwner) {
+      customer = await updateCustomer(ctx, customer.id, { waitingOnOwner: true })
+    }
 
     if (payload.type === 'lead') {
       const interaction = await logInteraction(ctx, {
@@ -78,16 +104,25 @@ export default defineEventHandler(
       return { data: { customerId: customer.id, interactionId: interaction.id } }
     }
 
-    if (!payload.lines || payload.lines.length === 0) {
-      throw Errors.badRequest('Website order webhook requires lines')
+    const externalOrderId = payload.externalOrderId || payload.eventId
+    try {
+      const order = await createOrder(ctx, {
+        customerId: customer.id,
+        channel: 'website',
+        externalOrderId,
+        lines: payload.lines!
+      })
+      return { data: { customerId: customer.id, orderId: order.id, orderNumber: order.orderNumber } }
+    } catch (err) {
+      // A concurrent delivery of the same order won the unique index race.
+      if (err instanceof AppError && err.code === 'CONFLICT') {
+        const existing = await findOrderByExternalId(ctx, externalOrderId)
+        if (existing) {
+          setHeader(event, 'X-Idempotent-Replayed', 'true')
+          return { data: { customerId: existing.customerId, orderId: existing.id, orderNumber: existing.orderNumber } }
+        }
+      }
+      throw err
     }
-
-    const order = await createOrder(ctx, {
-      customerId: customer.id,
-      channel: 'website',
-      externalOrderId: payload.externalOrderId || payload.eventId,
-      lines: payload.lines
-    })
-    return { data: { customerId: customer.id, orderId: order.id, orderNumber: order.orderNumber } }
   })
 )

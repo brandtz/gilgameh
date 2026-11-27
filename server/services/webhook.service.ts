@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from 'drizzle-orm'
+import { and, asc, desc, eq, isNull, lt, lte, or } from 'drizzle-orm'
 import { getDb, schema } from '../db'
 import { generateOpaqueToken, signHmacSha256, verifyHmacSha256 } from '../utils/crypto'
 import { Errors } from '../utils/errors'
@@ -104,9 +104,107 @@ export async function listWebhookDeliveries(ctx: ActorContext, limit = 50) {
     .limit(limit)
 }
 
+type WebhookEndpointRow = typeof schema.webhookEndpoints.$inferSelect
+type WebhookDeliveryRow = typeof schema.webhookDeliveries.$inferSelect
+
+export const MAX_WEBHOOK_DELIVERY_ATTEMPTS = 8
+const RETRY_BACKOFF_MS = [60_000, 300_000, 900_000, 3_600_000, 10_800_000, 21_600_000, 43_200_000]
+const STALE_PENDING_MS = 120_000
+const INLINE_DELIVERY_TIMEOUT_MS = 3_000
+const RETRY_DELIVERY_TIMEOUT_MS = 5_000
+// Keeps a retry run inside Netlify's ~10s synchronous function limit, including a cold start.
+const RETRY_RUN_BUDGET_MS = 7_000
+const MIN_RETRY_ATTEMPT_WINDOW_MS = 2_000
+
+/** Next retry time after `attempts` started attempts, or null once the cap is reached. */
+function nextRetryAfter(attempts: number): Date | null {
+  if (attempts >= MAX_WEBHOOK_DELIVERY_ATTEMPTS) return null
+  return new Date(Date.now() + RETRY_BACKOFF_MS[Math.min(Math.max(attempts, 1), RETRY_BACKOFF_MS.length) - 1])
+}
+
+// In test environments without external network targets, keep deliveries recorded cleanly
+function skipsNetworkInTests(url: string): boolean {
+  return process.env.VITEST === 'true' && !url.startsWith('http://127.0.0.1') && !url.startsWith('http://localhost')
+}
+
+/**
+ * Sends one delivery attempt that has already been counted in `delivery.attempts`, so an attempt
+ * cut off by a function timeout still advances the backoff and the attempt cap. Each attempt is
+ * signed with a fresh timestamp so receivers that reject old signatures accept retries; the body
+ * keeps the original event timestamp.
+ */
+async function attemptWebhookDelivery(
+  delivery: WebhookDeliveryRow,
+  endpoint: WebhookEndpointRow,
+  timeoutMs: number
+) {
+  const db = await getDb()
+  const body = JSON.stringify(delivery.payload)
+  const signedAt = Math.floor(Date.now() / 1000)
+  const signature = `t=${signedAt},v1=${signHmacSha256(endpoint.secret, `${signedAt}.${body}`)}`
+  const attempts = delivery.attempts
+
+  let statusCode: number | null = null
+  let error: string | null = null
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(endpoint.url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-BackOffice-Event': delivery.eventType,
+        'X-BackOffice-Delivery': delivery.id,
+        'X-BackOffice-Signature': signature
+      },
+      body,
+      signal: controller.signal
+    })
+    statusCode = res.status
+    if (!res.ok) error = `HTTP ${res.status}`
+    await res.body?.cancel().catch(() => {})
+  } catch (err) {
+    error = (err instanceof Error ? err.message : String(err)).slice(0, 500)
+  } finally {
+    clearTimeout(timer)
+  }
+
+  const ok = error === null
+  const exhausted = !ok && attempts >= MAX_WEBHOOK_DELIVERY_ATTEMPTS
+  await db
+    .update(schema.webhookDeliveries)
+    .set({
+      lastStatusCode: statusCode,
+      status: ok ? 'delivered' : 'failed',
+      deliveredAt: ok ? new Date() : null,
+      nextRetryAt: ok ? null : nextRetryAfter(attempts),
+      lastError: error
+    })
+    .where(eq(schema.webhookDeliveries.id, delivery.id))
+
+  if (!ok) {
+    logger.warn('Outbound webhook delivery failed', {
+      deliveryId: delivery.id,
+      eventType: delivery.eventType,
+      attempts,
+      statusCode,
+      exhausted
+    })
+  }
+
+  return {
+    deliveryId: delivery.id,
+    status: ok ? ('delivered' as const) : ('failed' as const),
+    statusCode,
+    attempts,
+    exhausted
+  }
+}
+
 /**
  * Enqueues and attempts immediate signed delivery for all matching active webhook endpoints.
- * Failed deliveries are recorded with exponential backoff `nextRetryAt` for retry workers.
+ * Failed deliveries get an exponential backoff `nextRetryAt` and are resent by
+ * `retryDueWebhookDeliveries` until they succeed or reach MAX_WEBHOOK_DELIVERY_ATTEMPTS.
  */
 export async function emitWebhookEvent(
   tenantId: string,
@@ -128,17 +226,16 @@ export async function emitWebhookEvent(
   const matching = endpoints.filter((ep) => ep.events.includes(eventType))
   if (matching.length === 0) return []
 
-  const timestamp = Math.floor(Date.now() / 1000)
   const payload = {
     event: eventType,
     tenantId,
-    timestamp,
+    timestamp: Math.floor(Date.now() / 1000),
     data
   }
-  const serialized = JSON.stringify(payload)
 
   const results = []
   for (const ep of matching) {
+    const skipNetwork = skipsNetworkInTests(ep.url)
     const [delivery] = await db
       .insert(schema.webhookDeliveries)
       .values({
@@ -147,65 +244,93 @@ export async function emitWebhookEvent(
         eventType,
         payload,
         status: 'pending',
-        attempts: 0
+        attempts: skipNetwork ? 0 : 1,
+        nextRetryAt: skipNetwork ? null : nextRetryAfter(1)
       })
       .returning()
 
-    const signature = signHmacSha256(ep.secret, `${timestamp}.${serialized}`)
-    const headerVal = `t=${timestamp},v1=${signature}`
-
-    // In test environments without external network targets, keep delivery recorded cleanly
-    if (process.env.VITEST === 'true' && !ep.url.startsWith('http://127.0.0.1') && !ep.url.startsWith('http://localhost')) {
-      results.push({ deliveryId: delivery.id, status: 'pending', signature: headerVal })
+    if (skipNetwork) {
+      results.push({ deliveryId: delivery.id, status: 'pending' as const })
       continue
     }
 
-    try {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 5000)
-      const res = await fetch(ep.url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-BackOffice-Event': eventType,
-          'X-BackOffice-Signature': headerVal
-        },
-        body: serialized,
-        signal: controller.signal
-      })
-      clearTimeout(timer)
-
-      const ok = res.status >= 200 && res.status < 300
-      await db
-        .update(schema.webhookDeliveries)
-        .set({
-          attempts: 1,
-          lastStatusCode: res.status,
-          status: ok ? 'delivered' : 'failed',
-          deliveredAt: ok ? new Date() : null,
-          nextRetryAt: ok ? null : new Date(Date.now() + 60_000),
-          lastError: ok ? null : `HTTP ${res.status}`
-        })
-        .where(eq(schema.webhookDeliveries.id, delivery.id))
-
-      results.push({ deliveryId: delivery.id, status: ok ? 'delivered' : 'failed', statusCode: res.status })
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      await db
-        .update(schema.webhookDeliveries)
-        .set({
-          attempts: 1,
-          status: 'failed',
-          lastError: msg.slice(0, 500),
-          nextRetryAt: new Date(Date.now() + 60_000)
-        })
-        .where(eq(schema.webhookDeliveries.id, delivery.id))
-      logger.warn('Outbound webhook delivery failed', { deliveryId: delivery.id, eventType })
-      results.push({ deliveryId: delivery.id, status: 'failed' })
-    }
+    results.push(await attemptWebhookDelivery(delivery, ep, INLINE_DELIVERY_TIMEOUT_MS))
   }
 
   return results
+}
+
+/**
+ * Resends failed deliveries whose backoff has elapsed, plus deliveries left pending by an
+ * interrupted inline attempt. Runs across all tenants. Each row is claimed with a conditional
+ * update that also counts the attempt, so overlapping workers never send the same attempt twice
+ * and a run killed mid-request cannot bypass the backoff or the attempt cap.
+ */
+export async function retryDueWebhookDeliveries(options: { limit?: number; now?: Date } = {}) {
+  const deadline = Date.now() + RETRY_RUN_BUDGET_MS
+  const db = await getDb()
+  const now = options.now ?? new Date()
+  const limit = Math.min(Math.max(options.limit ?? 20, 1), 100)
+  const dueCondition = or(
+    and(eq(schema.webhookDeliveries.status, 'failed'), lte(schema.webhookDeliveries.nextRetryAt, now)),
+    and(
+      eq(schema.webhookDeliveries.status, 'pending'),
+      lte(schema.webhookDeliveries.createdAt, new Date(now.getTime() - STALE_PENDING_MS)),
+      or(isNull(schema.webhookDeliveries.nextRetryAt), lte(schema.webhookDeliveries.nextRetryAt, now))
+    )
+  )
+
+  const candidates = await db
+    .select({ delivery: schema.webhookDeliveries, endpoint: schema.webhookEndpoints })
+    .from(schema.webhookDeliveries)
+    .innerJoin(schema.webhookEndpoints, eq(schema.webhookEndpoints.id, schema.webhookDeliveries.endpointId))
+    .where(
+      and(
+        dueCondition,
+        lt(schema.webhookDeliveries.attempts, MAX_WEBHOOK_DELIVERY_ATTEMPTS),
+        eq(schema.webhookEndpoints.isActive, true),
+        isNull(schema.webhookEndpoints.deletedAt)
+      )
+    )
+    .orderBy(asc(schema.webhookDeliveries.createdAt))
+    .limit(limit)
+
+  const claimed: Array<{ delivery: WebhookDeliveryRow; endpoint: WebhookEndpointRow }> = []
+  for (const { delivery, endpoint } of candidates) {
+    if (deadline - Date.now() < MIN_RETRY_ATTEMPT_WINDOW_MS) break
+    if (skipsNetworkInTests(endpoint.url)) continue
+    const attempts = delivery.attempts + 1
+    const [row] = await db
+      .update(schema.webhookDeliveries)
+      .set({
+        attempts,
+        status: 'failed',
+        lastError: 'Delivery attempt started but did not complete',
+        nextRetryAt: nextRetryAfter(attempts)
+      })
+      .where(
+        and(
+          eq(schema.webhookDeliveries.id, delivery.id),
+          eq(schema.webhookDeliveries.attempts, delivery.attempts),
+          dueCondition
+        )
+      )
+      .returning()
+    if (row) claimed.push({ delivery: row, endpoint })
+  }
+
+  const timeoutMs = Math.max(1_000, Math.min(RETRY_DELIVERY_TIMEOUT_MS, deadline - Date.now() - 500))
+  const results = await Promise.all(
+    claimed.map(({ delivery, endpoint }) => attemptWebhookDelivery(delivery, endpoint, timeoutMs))
+  )
+
+  return {
+    due: candidates.length,
+    attempted: results.length,
+    delivered: results.filter((r) => r.status === 'delivered').length,
+    failed: results.filter((r) => r.status === 'failed').length,
+    exhausted: results.filter((r) => r.exhausted).length
+  }
 }
 
 export async function verifyInboundWebhookSignature(
@@ -237,7 +362,7 @@ export async function verifyInboundWebhookSignature(
       )
     )
 
-  if (!cfg || !cfg.webhookSecret) {
+  if (!cfg || !cfg.isEnabled || !cfg.webhookSecret) {
     throw Errors.unauthorized(`Inbound ${provider} webhook is not configured for this tenant`)
   }
   if (!providedSignature) {

@@ -9,9 +9,44 @@ import { getCustomerById } from './customer.service'
 import { getQuoteById } from './quote.service'
 import { emitWebhookEvent } from './webhook.service'
 
+const WEBSITE_EXTERNAL_ORDER_INDEX = 'orders_tenant_website_external_idx'
+
+function isUniqueViolation(err: unknown, constraint: string): boolean {
+  for (let e: any = err; e; e = e.cause) {
+    if (e.code === '23505' && (e.constraint === constraint || String(e.message ?? '').includes(constraint))) {
+      return true
+    }
+  }
+  return false
+}
+
+export async function findOrderByExternalId(ctx: ActorContext, externalOrderId: string, channel = 'website') {
+  const db = await getDb()
+  const [order] = await db
+    .select()
+    .from(schema.orders)
+    .where(
+      and(
+        eq(schema.orders.tenantId, ctx.tenantId),
+        eq(schema.orders.channel, channel),
+        eq(schema.orders.externalOrderId, externalOrderId),
+        isNull(schema.orders.deletedAt)
+      )
+    )
+    .limit(1)
+  return order ?? null
+}
+
 export async function listOrders(
   ctx: ActorContext,
-  filters: { status?: string; customerId?: string; channel?: string; limit: number; offset: number }
+  filters: {
+    status?: string
+    customerId?: string
+    channel?: string
+    externalOrderId?: string
+    limit: number
+    offset: number
+  }
 ) {
   const db = await getDb()
   const conditions = [
@@ -21,6 +56,7 @@ export async function listOrders(
   if (filters.status) conditions.push(eq(schema.orders.status, filters.status))
   if (filters.customerId) conditions.push(eq(schema.orders.customerId, filters.customerId))
   if (filters.channel) conditions.push(eq(schema.orders.channel, filters.channel))
+  if (filters.externalOrderId) conditions.push(eq(schema.orders.externalOrderId, filters.externalOrderId))
 
   const whereClause = and(...conditions)
   const [rows, countRows] = await Promise.all([
@@ -238,6 +274,13 @@ export async function createOrder(
       lines: insertedLines,
       workItems: insertedWorkItems
     }
+  }).catch((err: unknown) => {
+    if (isUniqueViolation(err, WEBSITE_EXTERNAL_ORDER_INDEX)) {
+      throw Errors.conflict(`A website order with externalOrderId "${input.externalOrderId}" already exists`, {
+        externalOrderId: input.externalOrderId
+      })
+    }
+    throw err
   })
 
   await emitWebhookEvent(ctx.tenantId, 'order.created', {
@@ -245,6 +288,7 @@ export async function createOrder(
     orderNumber: created.orderNumber,
     customerId: created.customerId,
     channel: created.channel,
+    externalOrderId: created.externalOrderId,
     totalCents: created.totalCents
   })
 
@@ -324,6 +368,8 @@ export async function updateOrderStatus(
   await emitWebhookEvent(ctx.tenantId, 'order.status_changed', {
     orderId: updated.id,
     orderNumber: updated.orderNumber,
+    channel: updated.channel,
+    externalOrderId: updated.externalOrderId,
     status: updated.status
   })
 

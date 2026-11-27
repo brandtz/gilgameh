@@ -77,6 +77,37 @@ export async function findCustomerCandidates(ctx: ActorContext, query: string) {
   }
 }
 
+/**
+ * Strict matching for unattended inbound events (website leads/orders):
+ * exact email when one is given, otherwise an exact, unique name.
+ * Unlike findCustomerCandidates, never matches on substrings.
+ */
+export async function findCustomerForInboundEvent(
+  ctx: ActorContext,
+  input: { name: string; email?: string | null }
+) {
+  const db = await getDb()
+  const base = [eq(schema.customers.tenantId, ctx.tenantId), isNull(schema.customers.deletedAt)]
+  const email = input.email?.trim().toLowerCase()
+  if (email) {
+    const [match] = await db
+      .select()
+      .from(schema.customers)
+      .where(and(...base, sql`lower(${schema.customers.email}) = ${email}`))
+      .orderBy(desc(schema.customers.updatedAt))
+      .limit(1)
+    return match ?? null
+  }
+  const name = input.name.trim().toLowerCase()
+  if (!name) return null
+  const matches = await db
+    .select()
+    .from(schema.customers)
+    .where(and(...base, sql`lower(trim(${schema.customers.name})) = ${name}`))
+    .limit(2)
+  return matches.length === 1 ? matches[0] : null
+}
+
 export async function getCustomerById(ctx: ActorContext, id: string) {
   const db = await getDb()
   const [customer] = await db
@@ -351,6 +382,23 @@ export async function listInteractions(
       : rows
 
   return { items, total: countRows[0]?.count ?? 0 }
+}
+
+export async function findInteractionByExternalRef(ctx: ActorContext, externalRef: string) {
+  const db = await getDb()
+  const [interaction] = await db
+    .select()
+    .from(schema.interactions)
+    .where(
+      and(
+        eq(schema.interactions.tenantId, ctx.tenantId),
+        eq(schema.interactions.externalRef, externalRef),
+        isNull(schema.interactions.deletedAt)
+      )
+    )
+    .orderBy(schema.interactions.createdAt)
+    .limit(1)
+  return interaction ?? null
 }
 
 export async function logInteraction(

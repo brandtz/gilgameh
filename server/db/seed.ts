@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm'
 import { getDb, schema, closeDb } from './index'
-import { hashPassword } from '../utils/crypto'
+import { generateOpaqueToken, hashPassword } from '../utils/crypto'
 
 export interface SeedResult {
   tenantId: string
@@ -281,7 +281,7 @@ export async function seedDatabase(): Promise<SeedResult> {
         provider,
         isEnabled: provider === 'email' || provider === 'website',
         config: provider === 'email' ? { from: 'quotes@studio37.local' } : {},
-        webhookSecret: provider === 'website' ? 'whsec_studio37_website_dev' : `whsec_studio37_${provider}_dev`
+        webhookSecret: generateOpaqueToken('whsec', 24)
       })
     }
   }

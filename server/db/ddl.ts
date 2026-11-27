@@ -558,6 +558,16 @@ CREATE INDEX IF NOT EXISTS quotes_tenant_customer_idx ON quotes(tenant_id, custo
 CREATE INDEX IF NOT EXISTS quotes_tenant_status_idx ON quotes(tenant_id, status);
 CREATE INDEX IF NOT EXISTS quote_lines_quote_idx ON quote_lines(quote_id);
 CREATE INDEX IF NOT EXISTS orders_tenant_customer_idx ON orders(tenant_id, customer_id);
+DO $$
+BEGIN
+  CREATE UNIQUE INDEX IF NOT EXISTS orders_tenant_website_external_idx ON orders(tenant_id, external_order_id)
+    WHERE channel = 'website' AND external_order_id IS NOT NULL AND deleted_at IS NULL;
+EXCEPTION WHEN unique_violation THEN
+  -- Pre-existing duplicate website orders must not block startup; webhook lookups still dedupe.
+  RAISE WARNING 'orders_tenant_website_external_idx not created: duplicate website external_order_id values exist';
+END $$;
+CREATE INDEX IF NOT EXISTS interactions_tenant_external_ref_idx ON interactions(tenant_id, external_ref)
+  WHERE external_ref IS NOT NULL;
 CREATE INDEX IF NOT EXISTS work_items_tenant_state_idx ON work_items(tenant_id, state);
 CREATE INDEX IF NOT EXISTS invoices_tenant_status_idx ON invoices(tenant_id, status);
 CREATE INDEX IF NOT EXISTS payments_tenant_invoice_idx ON payments(tenant_id, invoice_id);

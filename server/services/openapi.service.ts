@@ -68,7 +68,21 @@ export function buildOpenApiSpec(baseUrl: string) {
       '/quotes/{id}/status': { post: { summary: 'Transition sent quote to accepted/declined/expired', tags: ['Quotes'] } },
       '/quotes/{id}/pdf': { get: { summary: 'Download branded Quote PDF', tags: ['Quotes'] } },
       '/orders': {
-        get: { summary: 'List orders', tags: ['Orders'] },
+        get: {
+          summary: 'List orders',
+          tags: ['Orders'],
+          parameters: [
+            { name: 'status', in: 'query', schema: { type: 'string' } },
+            { name: 'customerId', in: 'query', schema: { type: 'string', format: 'uuid' } },
+            { name: 'channel', in: 'query', schema: { type: 'string' } },
+            {
+              name: 'externalOrderId',
+              in: 'query',
+              description: 'Exact match on the external order reference (e.g. website checkout session ID)',
+              schema: { type: 'string' }
+            }
+          ]
+        },
         post: { summary: 'Create order (from quote or external channel; generates production work items)', tags: ['Orders'] }
       },
       '/orders/{id}': {

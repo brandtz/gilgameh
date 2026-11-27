@@ -10,6 +10,7 @@ import {
   index,
   uniqueIndex
 } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
 
 // ── Shared JSONB types ────────────────────────────────────────────────────────
 
@@ -313,7 +314,12 @@ export const interactions = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true })
   },
-  (t) => [index('interactions_tenant_customer_idx').on(t.tenantId, t.customerId)]
+  (t) => [
+    index('interactions_tenant_customer_idx').on(t.tenantId, t.customerId),
+    index('interactions_tenant_external_ref_idx')
+      .on(t.tenantId, t.externalRef)
+      .where(sql`${t.externalRef} IS NOT NULL`)
+  ]
 )
 
 // ── 4. Catalog & Tenant Attribute Schemas ─────────────────────────────────────
@@ -489,7 +495,10 @@ export const orders = pgTable(
   (t) => [
     uniqueIndex('orders_tenant_number_idx').on(t.tenantId, t.orderNumber),
     index('orders_tenant_customer_idx').on(t.tenantId, t.customerId),
-    index('orders_tenant_status_idx').on(t.tenantId, t.status)
+    index('orders_tenant_status_idx').on(t.tenantId, t.status),
+    uniqueIndex('orders_tenant_website_external_idx')
+      .on(t.tenantId, t.externalOrderId)
+      .where(sql`${t.channel} = 'website' AND ${t.externalOrderId} IS NOT NULL AND ${t.deletedAt} IS NULL`)
   ]
 )
 
